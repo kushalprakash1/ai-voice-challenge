@@ -98,7 +98,7 @@ def test_repetition_request_is_recognized() -> None:
     assert decision.kind is CommunicationKind.REPEAT
 
 
-def test_matching_day_offer_is_accepted() -> None:
+def test_matching_day_only_offer_is_partial() -> None:
     decision = decide(
         TurnMeaning(
             appointment_offer=AppointmentOffer(
@@ -108,7 +108,9 @@ def test_matching_day_offer_is_accepted() -> None:
         )
     )
 
-    assert decision.kind is CommunicationKind.ACCEPT_OFFER
+    assert decision.kind is CommunicationKind.ACCEPT_PARTIAL_OFFER
+    assert decision.offered_day == "Friday"
+    assert decision.offered_time is None
     assert decision.offered_day == "Friday"
 
 

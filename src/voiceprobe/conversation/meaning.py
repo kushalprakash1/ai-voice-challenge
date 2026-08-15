@@ -129,6 +129,14 @@ class TurnMeaning(BaseModel):
             "appointment has been booked, scheduled, or confirmed."
         ),
     )
+    conversation_end_requested: bool = Field(
+        default=False,
+        description=(
+            "True only when the tested voice agent explicitly ends or closes "
+            "the conversation, such as saying goodbye, bye, or otherwise "
+            "clearly indicating that the call is over."
+        ),
+    )
     requests_repetition: bool = Field(
         default=False,
         description=(

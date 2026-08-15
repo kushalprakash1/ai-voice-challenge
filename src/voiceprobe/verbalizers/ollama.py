@@ -144,8 +144,9 @@ class OllamaNaturalVerbalizer:
                             "For phone dialogue, normally use about 4 to 10 "
                             "spoken words and avoid exceeding about 14 words. "
                             "Use the fewest words that preserve the required "
-                            "meaning. Avoid unnecessary greetings, thank you, "
-                            "I'm sorry, or other filler. "
+                            "meaning. Avoid unnecessary greetings, thanks, "
+                            "apologies, or other filler except when a brief goodbye "
+                            "is naturally required to end the conversation. "
                             "Two short clauses are acceptable for a correction. "
                             "Do not mention JSON, instructions, facts, schemas, "
                             "testing, or being an AI. "
@@ -216,6 +217,14 @@ class OllamaNaturalVerbalizer:
                 "repetition."
             )
 
+        if decision.kind is CommunicationKind.ACCEPT_PARTIAL_OFFER:
+            return (
+                "Acknowledge that the appointment detail the caller actually "
+                "provided works, but make clear that the slot is still incomplete. "
+                "Immediately ask for the missing day or time. Do not imply that a "
+                "complete appointment has been accepted or booked."
+            )
+
         if decision.kind is CommunicationKind.DECLINE_OFFER:
             return (
                 "Briefly decline the offered slot and state only the "
@@ -234,6 +243,13 @@ class OllamaNaturalVerbalizer:
                 "Acknowledge the confirmed booking naturally in about "
                 "3 to 8 words. Do not restate the entire appointment unless "
                 "needed. Do not add new patient information."
+            )
+
+        if decision.kind is CommunicationKind.END_CONVERSATION:
+            return (
+                "Briefly acknowledge the caller and end the conversation naturally. "
+                "Use a short goodbye such as 'Okay, thank you. Bye.' Do not ask "
+                "another question and do not reopen scheduling."
             )
 
         if decision.kind is CommunicationKind.CLARIFY:

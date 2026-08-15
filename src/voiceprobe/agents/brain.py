@@ -23,9 +23,11 @@ class CommunicationKind(StrEnum):
     ANSWER = "answer"
     CORRECT = "correct"
     ACCEPT_OFFER = "accept_offer"
+    ACCEPT_PARTIAL_OFFER = "accept_partial_offer"
     DECLINE_OFFER = "decline_offer"
     REPEAT = "repeat"
     ACKNOWLEDGE_COMPLETE = "acknowledge_complete"
+    END_CONVERSATION = "end_conversation"
     CLARIFY = "clarify"
 
 
@@ -66,6 +68,11 @@ class PatientBrain:
                 kind=CommunicationKind.REPEAT,
             )
 
+        if meaning.conversation_end_requested:
+            return CommunicationDecision(
+                kind=CommunicationKind.END_CONVERSATION,
+            )
+
         if meaning.booking_confirmed:
             confirmation_offer = meaning.appointment_offer
 
@@ -103,20 +110,31 @@ class PatientBrain:
         if meaning.appointment_offer is not None:
             offer = meaning.appointment_offer
 
-            if self._offer_matches_preferences(
+            if self._offer_conflicts_with_preferences(
                 scenario=scenario,
                 day=offer.day,
                 time=offer.time,
             ):
                 return CommunicationDecision(
-                    kind=CommunicationKind.ACCEPT_OFFER,
+                    kind=CommunicationKind.DECLINE_OFFER,
+                    facts_to_communicate=self._preference_facts(scenario),
+                    offered_day=offer.day,
+                    offered_time=offer.time,
+                )
+
+            if self._offer_missing_required_detail(
+                scenario=scenario,
+                day=offer.day,
+                time=offer.time,
+            ):
+                return CommunicationDecision(
+                    kind=CommunicationKind.ACCEPT_PARTIAL_OFFER,
                     offered_day=offer.day,
                     offered_time=offer.time,
                 )
 
             return CommunicationDecision(
-                kind=CommunicationKind.DECLINE_OFFER,
-                facts_to_communicate=self._preference_facts(scenario),
+                kind=CommunicationKind.ACCEPT_OFFER,
                 offered_day=offer.day,
                 offered_time=offer.time,
             )
@@ -186,23 +204,45 @@ class PatientBrain:
         return tuple(facts)
 
     @staticmethod
-    def _offer_matches_preferences(
+    def _offer_conflicts_with_preferences(
         *,
         scenario: PatientScenario,
         day: str | None,
         time: str | None,
     ) -> bool:
+        """Return whether any supplied slot detail conflicts with patient truth."""
         preferred_day = scenario.facts.preferred_day
         preferred_time = scenario.facts.preferred_time
 
         if (
             day is not None
             and preferred_day is not None
-            and day.casefold() != preferred_day.casefold()
+            and " ".join(day.casefold().split())
+            != " ".join(preferred_day.casefold().split())
         ):
-            return False
+            return True
 
-        return time_matches_preference(
-            preferred=preferred_time,
-            offered=time,
+        return bool(
+            time is not None
+            and preferred_time is not None
+            and not time_matches_preference(
+                preferred=preferred_time,
+                offered=time,
+            )
         )
+
+    @staticmethod
+    def _offer_missing_required_detail(
+        *,
+        scenario: PatientScenario,
+        day: str | None,
+        time: str | None,
+    ) -> bool:
+        """Return whether a compatible offer is still missing required detail."""
+        preferred_day = scenario.facts.preferred_day
+        preferred_time = scenario.facts.preferred_time
+
+        if preferred_day is not None and day is None:
+            return True
+
+        return bool(preferred_time is not None and time is None)
