@@ -70,6 +70,17 @@ def apply_exploration_policy(
     if progress.objective_complete:
         return base_decision
 
+    # PRESERVE AUTHORITATIVE BOOKING VERIFICATION
+    #
+    # PatientBrain emits VERIFY_BOOKING when a concrete slot has
+    # already been accepted but the remote agent tries to end the
+    # call before confirming that the booking actually completed.
+    #
+    # Exploration mode must not replace that scheduling safeguard
+    # with a generic restatement of the original objective.
+    if base_decision.kind is CommunicationKind.VERIFY_BOOKING:
+        return base_decision
+
     # Active recall: a previously observed target behavior may deliberately
     # conflict with caller truth during a demo workflow. Exploration can tolerate
     # that behavior without ever allowing it to overwrite scenario truth.
