@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -171,9 +171,24 @@ def prepare_one_call(
     *,
     settings: Settings,
     scenario_id: str,
+    live_requested: bool = False,
 ):
-    """Create a fresh execution manifest containing exactly one scenario."""
-    policy = settings.call_policy()
+    """Create a fresh execution manifest containing exactly one scenario.
+
+    The CLI's explicit --live request controls whether the prepared manifest
+    is live-capable. Authorization still independently requires the live flag
+    and exact confirmation token before any dialing side effect is allowed.
+    """
+    if type(live_requested) is not bool:
+        raise TypeError("live_requested must be a boolean.")
+
+    base_policy = settings.call_policy()
+
+    policy = replace(
+        base_policy,
+        dry_run=not live_requested,
+    )
+
     scenario = get_scenario(scenario_id)
 
     suite = build_suite_plan(
@@ -243,6 +258,7 @@ def main() -> None:
     manifest = prepare_one_call(
         settings=settings,
         scenario_id=args.scenario,
+        live_requested=args.live,
     )
 
     # Persist evidence of exactly what is about to cross the live boundary.
