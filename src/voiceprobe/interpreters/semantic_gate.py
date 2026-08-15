@@ -570,6 +570,26 @@ def _routine_intake_fast_facts(
     ):
         return ("appointment_type",)
 
+    # TRUNCATED FIRST-NAME ASR FAST PATH
+    #
+    # Streaming ASR can finalize:
+    #
+    #     "I just need your first"
+    #
+    # before the remote speaker's trailing "name" is retained.
+    # Keep this deliberately narrow: only an utterance ending in
+    # "need your first" is interpreted as a first-name request.
+    truncated_first_name_request = (
+        re.search(
+            r"\bneed\s+your\s+first[\s.!?]*$",
+            text,
+        )
+        is not None
+    )
+
+    if truncated_first_name_request:
+        return ("first_name",)
+
     combined_name = (
         "first and last name" in text
         or "first & last name" in text
