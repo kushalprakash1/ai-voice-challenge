@@ -29,7 +29,77 @@ PORT = 9019
 AUDIO_SAMPLE_RATE_HZ = 8_000
 TURN_GAP_SECONDS = 2.0
 COMPLETE_TURN_FLUSH_SECONDS = 0.65
+SHORT_TURN_FLUSH_SECONDS = 1.0
 INCOMPLETE_TURN_FLUSH_SECONDS = 1.8
+
+_SINGLE_WORD_FRAGMENT_STARTERS = frozenset(
+    {
+        "how",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+    }
+)
+
+_INCOMPLETE_TRAILING_WORDS = frozenset(
+    {
+        "a",
+        "about",
+        "an",
+        "and",
+        "at",
+        "because",
+        "but",
+        "for",
+        "if",
+        "in",
+        "my",
+        "of",
+        "on",
+        "or",
+        "our",
+        "so",
+        "the",
+        "their",
+        "to",
+        "with",
+        "your",
+    }
+)
+
+_SHORT_AUXILIARY_STARTERS = frozenset(
+    {
+        "are",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "has",
+        "have",
+        "is",
+        "should",
+        "was",
+        "were",
+        "will",
+        "would",
+    }
+)
+
+_SHORT_PRONOUN_TAILS = frozenset(
+    {
+        "he",
+        "i",
+        "it",
+        "she",
+        "they",
+        "we",
+        "you",
+    }
+)
 
 TYPE_HANGUP = 0x00
 TYPE_UUID = 0x01
@@ -127,18 +197,60 @@ class ConsoleTranscriptListener(TranscriptEventListener):
     def _flush_delay_for_text(text: str) -> float:
         normalized = " ".join(text.split())
 
-        lexical = normalized.rstrip("?!.,:;…—-").split()
-
-        # Streaming ASR often temporarily finalizes tiny fragments such
-        # as "What?" or "They and" while the caller is still speaking.
-        # Do not treat those as confidently complete turns yet.
-        if len(lexical) <= 2:
+        if not normalized:
             return INCOMPLETE_TURN_FLUSH_SECONDS
 
+        # Explicit continuation punctuation is the strongest evidence that
+        # Moonshine finalized a line before the caller finished the turn.
         if normalized.endswith(("...", "…", ",", "-", "—", ":")):
             return INCOMPLETE_TURN_FLUSH_SECONDS
 
-        return COMPLETE_TURN_FLUSH_SECONDS
+        lexical = normalized.rstrip("?!.,:;…—-").split()
+
+        if not lexical:
+            return INCOMPLETE_TURN_FLUSH_SECONDS
+
+        # Longer finalized lines keep the proven 0.65 s endpoint and retain
+        # speculative semantic prefetch.
+        if len(lexical) > 2:
+            return COMPLETE_TURN_FLUSH_SECONDS
+
+        first = lexical[0].casefold().strip("'\"()[]{}")
+        last = lexical[-1].casefold().strip("'\"()[]{}")
+
+        # Moonshine can temporarily emit a bare interrogative while the
+        # speaker is still forming the actual question.
+        if len(lexical) == 1 and first in _SINGLE_WORD_FRAGMENT_STARTERS:
+            return INCOMPLETE_TURN_FLUSH_SECONDS
+
+        # A connective/function word at the end strongly suggests that the
+        # thought is unfinished ("They and", "What about", "Friday at").
+        if last in _INCOMPLETE_TRAILING_WORDS:
+            return INCOMPLETE_TURN_FLUSH_SECONDS
+
+        # Protect very short auxiliary+pronoun fragments such as "Can you?"
+        # even if ASR supplied terminal punctuation.
+        if (
+            len(lexical) == 2
+            and first in _SHORT_AUXILIARY_STARTERS
+            and last in _SHORT_PRONOUN_TAILS
+        ):
+            return INCOMPLETE_TURN_FLUSH_SECONDS
+
+        # A two-word auxiliary-led fragment without terminal punctuation is
+        # also likely to continue ("Would Friday" -> "...work for you?").
+        if (
+            len(lexical) == 2
+            and first in _SHORT_AUXILIARY_STARTERS
+            and not normalized.endswith(("?", ".", "!"))
+        ):
+            return INCOMPLETE_TURN_FLUSH_SECONDS
+
+        # Short self-contained answers/confirmations such as "Friday.",
+        # "Blue Cross?", "4:30 PM?", or "Okay, bye." no longer pay the full
+        # 1.8 s fragment penalty. They intentionally do not start speculative
+        # Ollama work, avoiding stale GPU requests if speech resumes.
+        return SHORT_TURN_FLUSH_SECONDS
 
     def _schedule_flush_locked(
         self,
