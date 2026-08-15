@@ -334,6 +334,11 @@ class PersistentCallLedger:
         return instance
 
     @property
+    def execution_id(self) -> str:
+        """Return the execution this ledger is permanently bound to."""
+        return self._authorization.manifest.execution_id
+
+    @property
     def entries(
         self,
     ) -> tuple[CallLedgerEntry, ...]:
