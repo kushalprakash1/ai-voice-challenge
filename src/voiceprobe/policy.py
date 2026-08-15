@@ -8,6 +8,7 @@ from voiceprobe.safety import ALLOWED_TEST_NUMBER
 _E164_PATTERN = re.compile(r"^\+[1-9][0-9]{7,14}$")
 
 DEFAULT_MAX_CALL_DURATION_SECONDS = 180
+MAX_CALL_DURATION_SECONDS = 600
 DEFAULT_MAX_SUITE_CALLS = 15
 
 
@@ -42,9 +43,9 @@ class CallPolicy:
                 "Maximum call duration must be an integer number of seconds."
             )
 
-        if not 1 <= self.max_call_duration_seconds <= 180:
+        if not 1 <= self.max_call_duration_seconds <= MAX_CALL_DURATION_SECONDS:
             raise InvalidCallPolicyError(
-                "Maximum call duration must be between 1 and 180 seconds."
+                f"Maximum call duration must be between 1 and {MAX_CALL_DURATION_SECONDS} seconds."
             )
 
         if type(self.max_suite_calls) is not int:

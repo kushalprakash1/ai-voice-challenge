@@ -12,6 +12,7 @@ from decimal import ROUND_UP, Decimal
 from pathlib import Path
 from typing import Final
 
+from voiceprobe.policy import MAX_CALL_DURATION_SECONDS
 from voiceprobe.execution import (
     AuthorizedExecution,
     CallLedger,
@@ -541,10 +542,10 @@ class BudgetLedger:
                 max_duration_seconds,
                 int,
             )
-            or not 1 <= max_duration_seconds <= 180
+            or not 1 <= max_duration_seconds <= MAX_CALL_DURATION_SECONDS
         ):
             raise BudgetStateError(
-                "Maximum call duration must be an integer between 1 and 180 seconds."
+                f"Maximum call duration must be an integer between 1 and {MAX_CALL_DURATION_SECONDS} seconds."
             )
 
         seconds = Decimal(max_duration_seconds)

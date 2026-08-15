@@ -15,6 +15,7 @@ from typing import Final
 from uuid import uuid4
 
 from voiceprobe.policy import CallPolicy
+from voiceprobe.policy import MAX_CALL_DURATION_SECONDS
 from voiceprobe.safety import validate_destination
 from voiceprobe.suite import AssessmentSuitePlan
 
@@ -161,7 +162,7 @@ def authorize_live_execution(
     if not 1 <= manifest.call_count <= manifest.max_suite_calls:
         raise ExecutionSafetyError("Manifest call count violates the suite limit.")
 
-    if not 1 <= manifest.max_call_duration_seconds <= 180:
+    if not 1 <= manifest.max_call_duration_seconds <= MAX_CALL_DURATION_SECONDS:
         raise ExecutionSafetyError("Manifest call-duration limit is unsafe.")
 
     return AuthorizedExecution(

@@ -44,8 +44,7 @@ def test_rejects_assessment_number_as_originating_number() -> None:
     "duration",
     [
         0,
-        181,
-        600,
+        601,
         1.5,
         True,
         None,

@@ -28,6 +28,10 @@ from voiceprobe.execution_state import (
     PersistentBudgetLedger,
     PersistentCallLedger,
 )
+from voiceprobe.policy import (
+    DEFAULT_MAX_CALL_DURATION_SECONDS,
+    MAX_CALL_DURATION_SECONDS,
+)
 from voiceprobe.runner import run_persistent_authorized_suite
 from voiceprobe.scenarios.catalog import get_scenario, list_scenarios
 from voiceprobe.suite import build_suite_plan
@@ -172,6 +176,7 @@ def prepare_one_call(
     settings: Settings,
     scenario_id: str,
     live_requested: bool = False,
+    max_call_duration_seconds: int | None = None,
 ):
     """Create a fresh execution manifest containing exactly one scenario.
 
@@ -187,6 +192,11 @@ def prepare_one_call(
     policy = replace(
         base_policy,
         dry_run=not live_requested,
+        max_call_duration_seconds=(
+            base_policy.max_call_duration_seconds
+            if max_call_duration_seconds is None
+            else max_call_duration_seconds
+        ),
     )
 
     scenario = get_scenario(scenario_id)
@@ -234,6 +244,17 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--max-call-duration-seconds",
+        type=int,
+        default=DEFAULT_MAX_CALL_DURATION_SECONDS,
+        help=(
+            "Maximum duration for this one call in seconds. "
+            f"Default is {DEFAULT_MAX_CALL_DURATION_SECONDS}; "
+            f"hard maximum is {MAX_CALL_DURATION_SECONDS}."
+        ),
+    )
+
+    parser.add_argument(
         "--budget-usd",
         default="5.00",
         help="Execution budget ceiling; must remain below $20.",
@@ -259,6 +280,9 @@ def main() -> None:
         settings=settings,
         scenario_id=args.scenario,
         live_requested=args.live,
+        max_call_duration_seconds=(
+            args.max_call_duration_seconds
+        ),
     )
 
     # Persist evidence of exactly what is about to cross the live boundary.
