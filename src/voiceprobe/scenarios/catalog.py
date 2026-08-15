@@ -30,6 +30,7 @@ SCENARIOS: Final[tuple[PatientScenario, ...]] = (
             patient_status="a new patient",
             visited_before=False,
             appointment_type="a new patient consultation",
+            provider_preference="any available provider",
             complaint="right shoulder pain",
             duration="five days",
             date_of_birth="April 12, 1998",

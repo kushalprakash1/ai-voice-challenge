@@ -19,6 +19,7 @@ type FactKey = Literal[
     "patient_status",
     "visited_before",
     "appointment_type",
+    "provider_preference",
     "complaint",
     "duration",
     "date_of_birth",

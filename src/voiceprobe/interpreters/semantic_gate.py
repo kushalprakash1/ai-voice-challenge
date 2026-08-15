@@ -527,6 +527,26 @@ def _routine_intake_fast_facts(
     if not request_like:
         return ()
 
+    # Provider/clinician preference is separate from patient identity.
+    provider_question = (
+        "provider" in text
+        and (
+            "which provider" in text
+            or "what provider" in text
+            or "provider would you like" in text
+            or "provider do you prefer" in text
+            or "provider you prefer" in text
+            or "provider preference" in text
+            or "name of the provider" in text
+            or "available provider" in text
+            or "any provider" in text
+            or "open to" in text
+        )
+    )
+
+    if provider_question:
+        return ("provider_preference",)
+
     # Appointment type must outrank generic "new patient" wording.
     if (
         "type of appointment" in text
@@ -550,12 +570,22 @@ def _routine_intake_fast_facts(
     ):
         return ("appointment_type",)
 
-    first_name = "first name" in text
+    combined_name = (
+        "first and last name" in text
+        or "first & last name" in text
+        or "first and last names" in text
+    )
+
+    first_name = (
+        "first name" in text
+        or combined_name
+    )
 
     last_name = (
         "last name" in text
         or "surname" in text
         or "family name" in text
+        or combined_name
     )
 
     if first_name and last_name:
@@ -737,7 +767,11 @@ def deterministic_turn_meaning(
     # --------------------------------------------------------------
     # 5. Explicit workflow-permission grammar.
     # --------------------------------------------------------------
-    if _PERMISSION_RE.search(text) is not None:
+    if (
+        _PERMISSION_RE.search(text) is not None
+        and _routine_intake_fast_facts(text)
+        != ("provider_preference",)
+    ):
         direction = (
             WorkflowDirection.STOP
             if _STOP_ACTION_RE.search(text) is not None
@@ -763,11 +797,12 @@ def deterministic_turn_meaning(
     # --------------------------------------------------------------
     # 4. High-confidence supported patient-fact requests.
     # --------------------------------------------------------------
-    if _DECLARATIVE_NAME_REQUEST_RE.search(text) is not None:
-        facts = ("name",)
-    else:
-        facts = _routine_intake_fast_facts(text)
-        if not facts:
+    facts = _routine_intake_fast_facts(text)
+
+    if not facts:
+        if _DECLARATIVE_NAME_REQUEST_RE.search(text) is not None:
+            facts = ("name",)
+        else:
             facts = _requested_facts(text)
 
     if facts:

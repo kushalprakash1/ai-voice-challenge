@@ -276,6 +276,17 @@ class DeterministicNaturalVerbalizer:
 
             return " ".join(sentences)
 
+        if key_set == {"first_name", "last_name"}:
+            return cls._sentence(
+                f"{values['first_name']} {values['last_name']}"
+            )
+
+        if key_set == {"provider_preference"}:
+            return (
+                "I don't have a preference. "
+                "Any available provider is fine."
+            )
+
         if key_set == {"complaint", "duration"}:
             return cls._sentence(
                 f"{values['complaint']} for {values['duration']}"

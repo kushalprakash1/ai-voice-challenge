@@ -34,6 +34,7 @@ class PatientFacts(BaseModel):
     patient_status: str | None = None
     visited_before: bool | None = None
     appointment_type: str | None = None
+    provider_preference: str | None = None
 
     date_of_birth: str | None = None
     insurance: str | None = None
@@ -48,6 +49,7 @@ class PatientFacts(BaseModel):
         "last_name",
         "patient_status",
         "appointment_type",
+        "provider_preference",
         "date_of_birth",
         "insurance",
         "preferred_day",
