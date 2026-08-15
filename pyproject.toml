@@ -5,10 +5,15 @@ description = "Add your description here"
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28.1",
+    "kokoro>=0.9.4",
+    "moonshine-voice>=0.1.2",
+    "numpy>=2.5.2",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
     "python-dotenv>=1.2.2",
     "rich>=15.0.0",
+    "soundfile>=0.14.0",
+    "soxr>=1.1.0",
     "telnyx>=4.173.0",
     "typer>=0.27.1",
     "websockets>=17.0.1",
@@ -30,3 +35,16 @@ dev = [
     "ruff>=0.16.3",
     "semgrep>=1.173.0",
 ]
+
+
+[[tool.mypy.overrides]]
+module = ["moonshine_voice", "moonshine_voice.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["soxr"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["kokoro", "kokoro.*"]
+ignore_missing_imports = true
