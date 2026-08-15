@@ -50,6 +50,7 @@ from voiceprobe.scenarios.catalog import (
 )
 from voiceprobe.scenarios.models import PatientScenario
 from voiceprobe.tts.telephony import (
+    FRAME_BYTES,
     FRAME_DURATION_SECONDS,
     build_audiosocket_packet,
     build_audiosocket_terminate_packet,
@@ -186,6 +187,92 @@ def send_audio(
             time.sleep(delay)
 
 
+# CONTINUOUS AUDIOSOCKET IDLE SILENCE
+#
+# Asterisk's rtp_keepalive sends sparse comfort-noise packets when the
+# application provides no outbound AudioSocket PCM. Real calls repeatedly
+# terminated about 15-16 seconds after VoiceProbe's final spoken PCM frame.
+#
+# Keep the media leg continuously active by supplying correctly framed,
+# real-time-paced PCM16 silence while VoiceProbe is listening. Speech and
+# silence share one lock so silence can never be interleaved into TTS audio.
+def send_audio_synchronized(
+    connection: socket.socket,
+    pcm16: bytes,
+    *,
+    send_lock: threading.Lock | None = None,
+    recorder: RunArtifactRecorder | None = None,
+) -> None:
+    """Send patient speech without interleaving idle-silence frames."""
+
+    if send_lock is None:
+        send_audio(
+            connection,
+            pcm16,
+            recorder=recorder,
+        )
+        return
+
+    with send_lock:
+        send_audio(
+            connection,
+            pcm16,
+            recorder=recorder,
+        )
+
+
+def send_idle_silence(
+    connection: socket.socket,
+    *,
+    stop: threading.Event,
+    send_lock: threading.Lock,
+) -> None:
+    """Continuously send 20 ms PCM16 silence until the call stops.
+
+    The sender is paced against monotonic time and shares the exact same
+    output lock as patient speech. It therefore maintains ordinary outbound
+    AudioSocket media while listening without mixing silence into TTS.
+    """
+
+    silence_frame = bytes(FRAME_BYTES)
+    silence_packet = build_audiosocket_packet(
+        silence_frame
+    )
+
+    next_deadline = time.monotonic()
+
+    while not stop.is_set():
+
+        with send_lock:
+
+            # The call may have ended while this thread was waiting for
+            # patient speech to release the output lock.
+            if stop.is_set():
+                return
+
+            try:
+                connection.sendall(
+                    silence_packet
+                )
+            except OSError:
+                return
+
+        next_deadline += FRAME_DURATION_SECONDS
+
+        delay = (
+            next_deadline
+            - time.monotonic()
+        )
+
+        if delay > 0:
+            if stop.wait(delay):
+                return
+        else:
+            # Never "catch up" by flooding stale silence frames if the
+            # scheduler temporarily stalls.
+            next_deadline = time.monotonic()
+
+
 def terminate_audiosocket_connection(
     connection: socket.socket,
 ) -> bool:
@@ -221,6 +308,7 @@ def process_turns(
     busy: threading.Event,
     stop: threading.Event,
     recorder: RunArtifactRecorder,
+    audiosocket_send_lock: threading.Lock | None = None,
     tts_pcm_cache: dict[str, bytes] | None = None,
 ) -> None:
     """Process complete ASR turns sequentially."""
@@ -444,9 +532,10 @@ def process_turns(
 
             print("Speaking...")
 
-            send_audio(
+            send_audio_synchronized(
                 connection,
                 pcm16,
+                send_lock=audiosocket_send_lock,
                 recorder=recorder,
             )
 
@@ -535,6 +624,13 @@ def handle_call(
     busy = threading.Event()
     stop = threading.Event()
 
+    # Speech and idle-silence media must never write to AudioSocket
+    # concurrently.
+    audiosocket_send_lock = threading.Lock()
+
+    # Start only after Asterisk has supplied the AudioSocket UUID.
+    idle_silence_thread: threading.Thread | None = None
+
     def prefetch_candidate(
         candidate_text: str,
     ) -> None:
@@ -610,6 +706,7 @@ def handle_call(
             "busy": busy,
             "stop": stop,
             "recorder": recorder,
+            "audiosocket_send_lock": audiosocket_send_lock,
             "tts_pcm_cache": tts_pcm_cache,
         },
         daemon=True,
@@ -688,6 +785,28 @@ def handle_call(
 
                     print(f"Call UUID: {call_id}")
 
+                    if idle_silence_thread is None:
+                        idle_silence_thread = threading.Thread(
+                            target=send_idle_silence,
+                            kwargs={
+                                "connection": connection,
+                                "stop": stop,
+                                "send_lock": audiosocket_send_lock,
+                            },
+                            name="voiceprobe-idle-silence",
+                            daemon=True,
+                        )
+
+                        idle_silence_thread.start()
+
+                        recorder.record_event(
+                            "idle_silence_media_started",
+                            frame_bytes=FRAME_BYTES,
+                            frame_duration_seconds=(
+                                FRAME_DURATION_SECONDS
+                            ),
+                        )
+
                 continue
 
             if message_type == TYPE_DTMF:
@@ -726,6 +845,12 @@ def handle_call(
 
     finally:
         stop.set()
+
+        if idle_silence_thread is not None:
+            idle_silence_thread.join(
+                timeout=1.0
+            )
+
         session.invalidate_prefetch()
 
         transcriber.stop()
