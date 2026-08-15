@@ -18,6 +18,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from voiceprobe.conversation.grounding import ground_turn_meaning
+from voiceprobe.conversation.normalization import normalize_turn_meaning
 from voiceprobe.conversation.state import FactKey, build_initial_state
 from voiceprobe.interpreters.ollama import OllamaConversationInterpreter
 from voiceprobe.scenarios.models import PatientFacts, PatientScenario
@@ -245,9 +246,14 @@ def main() -> None:
             started = perf_counter()
 
             try:
-                meaning = interpreter.interpret(
+                raw_meaning = interpreter.interpret(
                     scenario=scenario,
                     state=state,
+                    agent_turn=case.utterance,
+                )
+
+                meaning = normalize_turn_meaning(
+                    raw_meaning,
                     agent_turn=case.utterance,
                 )
 
