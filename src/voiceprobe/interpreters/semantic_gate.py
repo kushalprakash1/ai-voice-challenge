@@ -767,6 +767,68 @@ def deterministic_turn_meaning(
     # --------------------------------------------------------------
     # 5. Explicit workflow-permission grammar.
     # --------------------------------------------------------------
+    # DAYPART-ONLY APPOINTMENT OFFER
+    #
+    # Telephony ASR may finalize the day and the offered daypart
+    # as separate turns. A phrase such as "book a morning slot"
+    # is still a high-confidence appointment offer and must be
+    # compared against the patient's authoritative preference.
+    daypart_offer = next(
+        (
+            daypart
+            for daypart in (
+                "morning",
+                "afternoon",
+                "evening",
+            )
+            if re.search(
+                rf"\b{daypart}\b",
+                text,
+            )
+            is not None
+        ),
+        None,
+    )
+
+    scheduling_offer_language = (
+        "slot" in text
+        or "appointment" in text
+    )
+
+    # A daypart becomes an appointment offer only when the remote
+    # agent is actually proposing to book/reserve/schedule it.
+    #
+    # "Would you like me to check Friday afternoon appointments?"
+    # is permission to search and must remain a normal workflow
+    # permission, not an appointment offer.
+    booking_action = (
+        re.search(
+            r"\b(?:book|booking|schedule|scheduling|reserve|reserving)\b",
+            text,
+        )
+        is not None
+    )
+
+    if (
+        slot is None
+        and daypart_offer is not None
+        and scheduling_offer_language
+        and booking_action
+    ):
+        return TurnMeaning(
+            response_expectation=ResponseExpectation.YES_NO,
+            workflow_relation=WorkflowRelation.ADVANCES_OBJECTIVE,
+            question_kind=QuestionKind.WORKFLOW_PERMISSION,
+            workflow_direction=WorkflowDirection.CONTINUE,
+            topic="appointment offer",
+            requested_facts=(),
+            appointment_offer=AppointmentOffer(
+                day=None,
+                time=daypart_offer,
+            ),
+            conversation_end_requested=end_requested,
+        )
+
     if (
         _PERMISSION_RE.search(text) is not None
         and _routine_intake_fast_facts(text)

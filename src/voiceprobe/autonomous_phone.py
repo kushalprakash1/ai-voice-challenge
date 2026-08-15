@@ -91,6 +91,7 @@ PRE_RENDERED_TTS_TEXTS = (
     "No, I haven't visited before.",
     "I'm a new patient. No, I haven't visited before.",
     "I don't have a preference. Any available provider is fine.",
+    'No, I need Friday afternoon.',
 )
 
 
