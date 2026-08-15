@@ -1,8 +1,8 @@
 """Minimal, secret-safe Asterisk Manager Interface client.
 
-The current implementation intentionally supports only connection,
-authentication, Ping, and Logoff. Outbound call origination is added only
-after this transport layer has been independently validated.
+The implementation supports connection, authentication, Ping, Logoff,
+and a narrowly scoped AudioSocket originate primitive. Assessment-destination
+policy remains outside this low-level transport layer.
 
 VoiceProbe AMI is restricted to IPv4 localhost by design.
 """
@@ -14,12 +14,22 @@ import socket
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol, Self
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 AMI_HOST = "127.0.0.1"
 AMI_DEFAULT_PORT = 5038
 
+VOICEPROBE_DIALPLAN_CONTEXT = "voiceprobe-test"
+VOICEPROBE_AUDIOSOCKET_TARGET = "127.0.0.1:9019"
+
 _HEADER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+_NANP_DESTINATION_PATTERN = re.compile(r"^\+1[2-9][0-9]{9}$")
+_ALLOWED_EVENT_MASKS = frozenset(
+    {
+        "off",
+        "call",
+    }
+)
 
 
 class AMIClientError(RuntimeError):
@@ -36,6 +46,22 @@ class AMIAuthenticationError(AMIClientError):
 
 class AMIConnectionStateError(AMIClientError):
     """Raised when an AMI operation is invalid for the current state."""
+
+
+class AMIOriginateError(AMIClientError):
+    """Raised when Asterisk rejects or fails an Originate request."""
+
+
+@dataclass(frozen=True, slots=True)
+class OriginateResult:
+    """Correlated result of one asynchronous AudioSocket originate."""
+
+    action_id: str
+    audiosocket_call_id: UUID
+    asterisk_unique_id: str
+    channel: str
+    response: str
+    reason: str | None
 
 
 class _SocketLike(Protocol):
@@ -61,6 +87,11 @@ _ConnectionFactory = Callable[
     [tuple[str, int], float],
     _SocketLike,
 ]
+_ActionIDFactory = Callable[[], str]
+
+
+def _new_action_id() -> str:
+    return f"voiceprobe-{uuid4().hex}"
 
 
 def _open_connection(
@@ -146,6 +177,10 @@ class AMIMessage:
     @property
     def action_id(self) -> str | None:
         return self.get("ActionID")
+
+    @property
+    def event(self) -> str | None:
+        return self.get("Event")
 
 
 def parse_ami_message(
@@ -289,13 +324,16 @@ class AsteriskAMIClient:
         config: AsteriskAMIConfig,
         *,
         connection_factory: _ConnectionFactory = _open_connection,
+        action_id_factory: _ActionIDFactory = _new_action_id,
     ) -> None:
         self.config = config
         self._connection_factory = connection_factory
+        self._action_id_factory = action_id_factory
         self._connection: _SocketLike | None = None
         self._stream: _BufferedAMIStream | None = None
         self._authenticated = False
         self._banner: str | None = None
+        self._event_mask = "off"
 
     @property
     def connected(self) -> bool:
@@ -341,13 +379,20 @@ class AsteriskAMIClient:
 
         return banner
 
-    def login(self) -> None:
+    def login(
+        self,
+        *,
+        events: str = "off",
+    ) -> None:
         """Authenticate as the restricted VoiceProbe AMI user."""
         if not self.connected:
             raise AMIConnectionStateError("AMI client must connect before login.")
 
         if self.authenticated:
             raise AMIConnectionStateError("AMI client is already authenticated.")
+
+        if events not in _ALLOWED_EVENT_MASKS:
+            raise ValueError("AMI events must be either 'off' or 'call'.")
 
         response = self._request(
             (
@@ -365,7 +410,7 @@ class AsteriskAMIClient:
                 ),
                 (
                     "Events",
-                    "off",
+                    events,
                 ),
             )
         )
@@ -374,6 +419,7 @@ class AsteriskAMIClient:
             raise AMIAuthenticationError("Asterisk AMI authentication failed.")
 
         self._authenticated = True
+        self._event_mask = events
 
     def ping(self) -> AMIMessage:
         """Send a no-side-effect AMI Ping."""
@@ -392,6 +438,118 @@ class AsteriskAMIClient:
             raise AMIProtocolError("Asterisk AMI returned an invalid Ping response.")
 
         return response
+
+    def originate_audiosocket(
+        self,
+        destination: str,
+        *,
+        call_id: UUID | None = None,
+        timeout_ms: int = 30_000,
+    ) -> OriginateResult:
+        """Originate one Local-channel call into the AudioSocket app.
+
+        This method validates dialplan compatibility only. Assessment
+        destination authorization remains the responsibility of the
+        higher-level production adapter.
+        """
+        self._require_authenticated()
+
+        if self._event_mask != "call":
+            raise AMIConnectionStateError(
+                "AudioSocket originate requires login(events='call')."
+            )
+
+        _validate_header_value(
+            destination,
+            name="Originate destination",
+        )
+
+        if not _NANP_DESTINATION_PATTERN.fullmatch(destination):
+            raise ValueError("Originate destination must be a +1 NANP E.164 number.")
+
+        if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int):
+            raise TypeError("Originate timeout must be an integer.")
+
+        if not 1 <= timeout_ms <= 180_000:
+            raise ValueError("Originate timeout must be between 1 and 180000 ms.")
+
+        resolved_call_id = uuid4() if call_id is None else call_id
+
+        if not isinstance(
+            resolved_call_id,
+            UUID,
+        ):
+            raise TypeError("AudioSocket call_id must be a UUID.")
+
+        channel = f"Local/{destination}@{VOICEPROBE_DIALPLAN_CONTEXT}"
+
+        data = f"{resolved_call_id},{VOICEPROBE_AUDIOSOCKET_TARGET}"
+
+        action_id, response = self._request_with_action_id(
+            (
+                (
+                    "Action",
+                    "Originate",
+                ),
+                (
+                    "Channel",
+                    channel,
+                ),
+                (
+                    "Application",
+                    "AudioSocket",
+                ),
+                (
+                    "Data",
+                    data,
+                ),
+                (
+                    "Timeout",
+                    str(timeout_ms),
+                ),
+                (
+                    "Async",
+                    "true",
+                ),
+            ),
+            require_action_id=True,
+        )
+
+        if response.response != "Success":
+            raise AMIOriginateError("Asterisk rejected the Originate request.")
+
+        event = self._wait_for_event(
+            event_name="OriginateResponse",
+            action_id=action_id,
+        )
+
+        originate_response = event.response
+
+        if originate_response != "Success":
+            reason = event.get("Reason")
+
+            raise AMIOriginateError(
+                "Asterisk OriginateResponse reported failure"
+                + (f" (reason={reason})." if reason is not None else ".")
+            )
+
+        unique_id = event.get("Uniqueid")
+
+        if unique_id is None or not unique_id.strip() or unique_id == "<null>":
+            raise AMIProtocolError(
+                "Successful OriginateResponse did not contain a valid Uniqueid."
+            )
+
+        returned_channel = event.get("Channel") or channel
+
+        return OriginateResult(
+            action_id=action_id,
+            audiosocket_call_id=resolved_call_id,
+            asterisk_unique_id=unique_id,
+            channel=returned_channel,
+            response=originate_response,
+            reason=event.get("Reason"),
+        )
 
     def logoff(self) -> None:
         """Log off when authenticated, then close the socket."""
@@ -427,6 +585,7 @@ class AsteriskAMIClient:
         self._stream = None
         self._authenticated = False
         self._banner = None
+        self._event_mask = "off"
 
         if connection is not None:
             connection.close()
@@ -438,10 +597,28 @@ class AsteriskAMIClient:
             ...,
         ],
     ) -> AMIMessage:
+        _, response = self._request_with_action_id(headers)
+
+        return response
+
+    def _request_with_action_id(
+        self,
+        headers: tuple[
+            tuple[str, str],
+            ...,
+        ],
+        *,
+        require_action_id: bool = False,
+    ) -> tuple[str, AMIMessage]:
         connection = self._require_connection()
         stream = self._require_stream()
 
-        action_id = f"voiceprobe-{uuid4().hex}"
+        action_id = self._action_id_factory()
+
+        _validate_header_value(
+            action_id,
+            name="AMI ActionID",
+        )
 
         payload = _encode_action(
             headers
@@ -458,26 +635,56 @@ class AsteriskAMIClient:
         except OSError as error:
             raise AMIProtocolError("AMI socket write failed.") from error
 
-        # VoiceProbe currently sends serial requests. Ignore unrelated
-        # asynchronous messages but require the matching response before
-        # proceeding.
         for _ in range(100):
             message = stream.read_message()
+
+            # OriginateResponse and other AMI events can also contain a
+            # Response header. They must never satisfy a normal action
+            # response wait.
+            if message.event is not None:
+                continue
 
             if message.response is None:
                 continue
 
             message_action_id = message.action_id
 
-            if message_action_id not in (
+            if require_action_id:
+                if message_action_id != action_id:
+                    continue
+            elif message_action_id not in (
                 None,
                 action_id,
             ):
                 continue
 
-            return message
+            return (
+                action_id,
+                message,
+            )
 
         raise AMIProtocolError("AMI response correlation limit exceeded.")
+
+    def _wait_for_event(
+        self,
+        *,
+        event_name: str,
+        action_id: str,
+    ) -> AMIMessage:
+        stream = self._require_stream()
+
+        for _ in range(200):
+            message = stream.read_message()
+
+            if message.event != event_name:
+                continue
+
+            if message.action_id != action_id:
+                continue
+
+            return message
+
+        raise AMIProtocolError("AMI event correlation limit exceeded.")
 
     def _require_connection(
         self,
