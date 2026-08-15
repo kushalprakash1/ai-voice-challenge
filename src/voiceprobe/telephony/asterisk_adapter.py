@@ -14,6 +14,7 @@ import socket
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID, uuid4
@@ -51,10 +52,70 @@ from voiceprobe.telephony.ami import (
     AsteriskHangupResult,
     OriginateResult,
 )
-from voiceprobe.verbalizers.ollama import OllamaNaturalVerbalizer
+from voiceprobe.verbalizers.deterministic import DeterministicNaturalVerbalizer
 
 DEFAULT_ACCEPT_TIMEOUT_SECONDS = 10.0
 DEFAULT_ORIGINATE_TIMEOUT_MS = 30_000
+
+
+class AsteriskTerminationStatus(StrEnum):
+    """Why the media session stopped from VoiceProbe's perspective."""
+
+    NORMAL_COMPLETION = "normal_completion"
+    PREMATURE_REMOTE_TERMINATION = "premature_remote_termination"
+    MAX_DURATION_TERMINATION = "max_duration_termination"
+
+
+def _classify_termination(
+    *,
+    objective_complete: bool,
+    max_duration_reached: bool,
+) -> AsteriskTerminationStatus:
+    """Classify termination without treating transport closure as success."""
+    if objective_complete:
+        return AsteriskTerminationStatus.NORMAL_COMPLETION
+
+    if max_duration_reached:
+        return AsteriskTerminationStatus.MAX_DURATION_TERMINATION
+
+    # The autonomous call path only requests normal local termination after
+    # PatientBrain returns END_CONVERSATION. The brain does not permit that
+    # before objective completion. Therefore an incomplete, non-deadline
+    # AudioSocket termination is not a successful local completion.
+    return AsteriskTerminationStatus.PREMATURE_REMOTE_TERMINATION
+
+
+def _termination_failure_reason(
+    *,
+    status: AsteriskTerminationStatus,
+    booking_confirmed: bool,
+    offer_accepted: bool,
+    offered_day: str | None,
+    offered_time: str | None,
+) -> str | None:
+    """Build durable evidence explaining an incomplete assessment."""
+    if status is AsteriskTerminationStatus.NORMAL_COMPLETION:
+        return None
+
+    if status is AsteriskTerminationStatus.MAX_DURATION_TERMINATION:
+        prefix = (
+            "max_duration_termination: call reached VoiceProbe's maximum "
+            "duration before the scheduling objective completed"
+        )
+    else:
+        prefix = (
+            "premature_remote_termination: call ended before the scheduling "
+            "objective completed and VoiceProbe had not requested normal "
+            "objective-complete termination"
+        )
+
+    return (
+        f"{prefix}; "
+        f"booking_confirmed={booking_confirmed}; "
+        f"offer_accepted={offer_accepted}; "
+        f"offered_day={offered_day!r}; "
+        f"offered_time={offered_time!r}"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +127,18 @@ class AsteriskMediaOutcome:
     duration_seconds: float
     originate: OriginateResult
     hangup: AsteriskHangupResult | None = None
+
+    # Defaults preserve compatibility for injected media executors that
+    # predate objective-aware termination classification.
+    termination_status: AsteriskTerminationStatus = (
+        AsteriskTerminationStatus.NORMAL_COMPLETION
+    )
+    objective_complete: bool = True
+    booking_confirmed: bool = True
+    offer_accepted: bool = True
+    offered_day: str | None = None
+    offered_time: str | None = None
+    failure_reason: str | None = None
 
 
 class _AMIClient(Protocol):
@@ -372,6 +445,8 @@ class AsteriskAssessmentCallAdapter:
             artifact_run_id=artifact_run_id,
             duration_seconds=outcome.duration_seconds,
             provider_cost_usd=None,
+            assessment_succeeded=outcome.objective_complete,
+            failure_reason=outcome.failure_reason,
         )
 
     def _execute_media_call(
@@ -391,7 +466,7 @@ class AsteriskAssessmentCallAdapter:
             client=http_client,
         )
 
-        verbalizer = OllamaNaturalVerbalizer(
+        verbalizer = DeterministicNaturalVerbalizer(
             model=self._model,
             url=self._ollama_url,
             client=http_client,
@@ -450,12 +525,15 @@ class AsteriskAssessmentCallAdapter:
                     )
 
                     call_finished = threading.Event()
+                    max_duration_reached = threading.Event()
 
                     def enforce_max_duration() -> None:
                         expired = not call_finished.wait(request.max_duration_seconds)
 
                         if not expired:
                             return
+
+                        max_duration_reached.set()
 
                         recorder.record_event(
                             "max_call_duration_reached",
@@ -530,11 +608,55 @@ class AsteriskAssessmentCallAdapter:
                             channel=originate_result.channel,
                         )
 
+                    progress = session.progress
+
+                    termination_status = _classify_termination(
+                        objective_complete=progress.objective_complete,
+                        max_duration_reached=max_duration_reached.is_set(),
+                    )
+
+                    failure_reason = _termination_failure_reason(
+                        status=termination_status,
+                        booking_confirmed=progress.booking_confirmed,
+                        offer_accepted=progress.offer_accepted,
+                        offered_day=progress.offered_day,
+                        offered_time=progress.offered_time,
+                    )
+
+                    recorder.record_event(
+                        "call_termination_classified",
+                        termination_status=termination_status.value,
+                        objective_complete=progress.objective_complete,
+                        booking_confirmed=progress.booking_confirmed,
+                        offer_accepted=progress.offer_accepted,
+                        offered_day=progress.offered_day,
+                        offered_time=progress.offered_time,
+                        max_duration_reached=max_duration_reached.is_set(),
+                        asterisk_hangup_observed=(hangup_result is not None),
+                        asterisk_hangup_cause=(
+                            hangup_result.cause
+                            if hangup_result is not None
+                            else None
+                        ),
+                        asterisk_hangup_cause_text=(
+                            hangup_result.cause_text
+                            if hangup_result is not None
+                            else None
+                        ),
+                    )
+
                     duration_seconds = recorder.elapsed_seconds
 
+                    artifact_status = (
+                        "completed"
+                        if progress.objective_complete
+                        else termination_status.value
+                    )
+
                     recorder.finalize(
-                        status="completed",
+                        status=artifact_status,
                         call_id=str(observed_call_id),
+                        error=failure_reason,
                     )
 
                     return AsteriskMediaOutcome(
@@ -543,6 +665,13 @@ class AsteriskAssessmentCallAdapter:
                         duration_seconds=duration_seconds,
                         originate=originate_result,
                         hangup=hangup_result,
+                        termination_status=termination_status,
+                        objective_complete=progress.objective_complete,
+                        booking_confirmed=progress.booking_confirmed,
+                        offer_accepted=progress.offer_accepted,
+                        offered_day=progress.offered_day,
+                        offered_time=progress.offered_time,
+                        failure_reason=failure_reason,
                     )
         finally:
             interpreter.close()

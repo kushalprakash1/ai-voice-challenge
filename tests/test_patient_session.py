@@ -454,7 +454,7 @@ def test_wrong_booking_and_goodbye_is_rejected_before_ending() -> None:
     assert not session.state.objective_complete
 
 
-def test_plain_goodbye_still_ends_without_completing_booking() -> None:
+def test_plain_goodbye_before_booking_does_not_end_conversation() -> None:
     interpreter = StubInterpreter(
         TurnMeaning(
             conversation_end_requested=True,
@@ -469,7 +469,76 @@ def test_plain_goodbye_still_ends_without_completing_booking() -> None:
 
     result = session.handle_agent_turn("Okay, goodbye.")
 
-    assert result.decision.kind is CommunicationKind.END_CONVERSATION
+    assert result.decision.kind is CommunicationKind.DECLINE_WORKFLOW
+    assert not session.progress.booking_confirmed
+    assert not session.progress.objective_complete
+    assert not session.state.objective_complete
+
+
+def test_goodbye_after_accepted_offer_requests_booking_confirmation() -> None:
+    interpreter = StubInterpreter(
+        TurnMeaning(
+            appointment_offer=AppointmentOffer(
+                day="Friday",
+                time="2:30 PM",
+            ),
+        ),
+        TurnMeaning(
+            conversation_end_requested=True,
+        ),
+    )
+
+    session = PatientSession(
+        scenario=build_scenario(),
+        interpreter=interpreter,
+        verbalizer=StubVerbalizer(),
+    )
+
+    first = session.handle_agent_turn(
+        "Friday at 2:30 PM is available."
+    )
+
+    assert first.decision.kind is CommunicationKind.ACCEPT_OFFER
+    assert session.progress.offer_accepted
+
+    result = session.handle_agent_turn("Okay, goodbye.")
+
+    assert result.decision.kind is CommunicationKind.VERIFY_BOOKING
+    assert result.decision.offered_day == "Friday"
+    assert result.decision.offered_time == "2:30 PM"
+
+    assert session.progress.offer_accepted
+    assert not session.progress.booking_confirmed
+    assert not session.progress.objective_complete
+    assert not session.state.objective_complete
+
+
+def test_offer_and_goodbye_same_turn_processes_offer_before_ending() -> None:
+    interpreter = StubInterpreter(
+        TurnMeaning(
+            appointment_offer=AppointmentOffer(
+                day="Friday",
+                time="2:30 PM",
+            ),
+            conversation_end_requested=True,
+        )
+    )
+
+    session = PatientSession(
+        scenario=build_scenario(),
+        interpreter=interpreter,
+        verbalizer=StubVerbalizer(),
+    )
+
+    result = session.handle_agent_turn(
+        "Friday at 2:30 PM is available. Goodbye."
+    )
+
+    assert result.decision.kind is CommunicationKind.ACCEPT_OFFER
+    assert session.progress.offered_day == "Friday"
+    assert session.progress.offered_time == "2:30 PM"
+    assert session.progress.offer_accepted
+
     assert not session.progress.booking_confirmed
     assert not session.progress.objective_complete
     assert not session.state.objective_complete

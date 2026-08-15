@@ -16,6 +16,7 @@ from voiceprobe.conversation.meaning import (
     ResponseExpectation,
     TurnMeaning,
     WorkflowDirection,
+    WorkflowRelation,
 )
 from voiceprobe.conversation.objective import AppointmentProgress
 from voiceprobe.conversation.scheduling import time_matches_preference
@@ -118,11 +119,6 @@ class PatientBrain:
                 kind=CommunicationKind.CLARIFY,
             )
 
-        if meaning.conversation_end_requested:
-            return CommunicationDecision(
-                kind=CommunicationKind.END_CONVERSATION,
-            )
-
         if meaning.appointment_offer is not None:
             offer = meaning.appointment_offer
 
@@ -161,6 +157,34 @@ class PatientBrain:
                 facts_to_communicate=meaning.requested_facts,
             )
 
+        if meaning.conversation_end_requested:
+            # A goodbye is not proof that the scheduling objective has
+            # completed. Never voluntarily cooperate with premature call
+            # termination while the appointment remains unfinished.
+            #
+            # A correctly matched booking confirmation is handled earlier
+            # in this method and may legitimately return END_CONVERSATION.
+            if progress.objective_complete:
+                return CommunicationDecision(
+                    kind=CommunicationKind.END_CONVERSATION,
+                )
+
+            # If we already accepted a concrete slot but have not received
+            # authoritative confirmation that it was booked, keep the call
+            # alive long enough to request that confirmation.
+            if progress.offer_accepted:
+                return CommunicationDecision(
+                    kind=CommunicationKind.VERIFY_BOOKING,
+                    offered_day=progress.offered_day,
+                    offered_time=progress.offered_time,
+                )
+
+            # No valid slot has even been accepted yet. Decline the attempt
+            # to terminate and keep pursuing the scheduling objective.
+            return CommunicationDecision(
+                kind=CommunicationKind.DECLINE_WORKFLOW,
+            )
+
         if meaning.unclear:
             return CommunicationDecision(
                 kind=CommunicationKind.CLARIFY,
@@ -173,14 +197,30 @@ class PatientBrain:
 
         if meaning.response_expectation is ResponseExpectation.YES_NO:
             if meaning.question_kind is QuestionKind.WORKFLOW_PERMISSION:
-                if meaning.workflow_direction is WorkflowDirection.CONTINUE:
-                    return CommunicationDecision(
-                        kind=CommunicationKind.AGREE,
-                    )
-
                 if meaning.workflow_direction is WorkflowDirection.STOP:
                     return CommunicationDecision(
                         kind=CommunicationKind.DECLINE_WORKFLOW,
+                    )
+
+                if meaning.workflow_direction is WorkflowDirection.CONTINUE:
+                    if (
+                        meaning.workflow_relation
+                        is WorkflowRelation.ADVANCES_OBJECTIVE
+                    ):
+                        return CommunicationDecision(
+                            kind=CommunicationKind.AGREE,
+                        )
+
+                    if meaning.workflow_relation in {
+                        WorkflowRelation.NONE,
+                        WorkflowRelation.OPPOSES_OBJECTIVE,
+                    }:
+                        return CommunicationDecision(
+                            kind=CommunicationKind.DECLINE_WORKFLOW,
+                        )
+
+                    return CommunicationDecision(
+                        kind=CommunicationKind.CLARIFY,
                     )
 
             # A yes/no question about an unsupported patient attribute must

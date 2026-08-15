@@ -66,18 +66,46 @@ def test_goal_aligned_yes_no_workflow_is_agreed_to() -> None:
     assert decision.facts_to_communicate == ()
 
 
-def test_local_workflow_direction_beats_bad_objective_relation() -> None:
+def test_goal_opposing_continue_workflow_is_declined() -> None:
     decision = decide(
         TurnMeaning(
             response_expectation=ResponseExpectation.YES_NO,
             workflow_relation=WorkflowRelation.OPPOSES_OBJECTIVE,
             question_kind=QuestionKind.WORKFLOW_PERMISSION,
             workflow_direction=WorkflowDirection.CONTINUE,
-            topic="creating a temporary patient profile",
+            topic="performing an objective-opposing side workflow",
         )
     )
 
-    assert decision.kind is CommunicationKind.AGREE
+    assert decision.kind is CommunicationKind.DECLINE_WORKFLOW
+
+
+def test_optional_continue_workflow_is_declined() -> None:
+    decision = decide(
+        TurnMeaning(
+            response_expectation=ResponseExpectation.YES_NO,
+            workflow_relation=WorkflowRelation.NONE,
+            question_kind=QuestionKind.WORKFLOW_PERMISSION,
+            workflow_direction=WorkflowDirection.CONTINUE,
+            topic="performing an optional side workflow",
+        )
+    )
+
+    assert decision.kind is CommunicationKind.DECLINE_WORKFLOW
+
+
+def test_uncertain_continue_workflow_requests_clarification() -> None:
+    decision = decide(
+        TurnMeaning(
+            response_expectation=ResponseExpectation.YES_NO,
+            workflow_relation=WorkflowRelation.UNCERTAIN,
+            question_kind=QuestionKind.WORKFLOW_PERMISSION,
+            workflow_direction=WorkflowDirection.CONTINUE,
+            topic="performing a workflow with unclear objective relevance",
+        )
+    )
+
+    assert decision.kind is CommunicationKind.CLARIFY
 
 
 def test_goal_opposing_yes_no_workflow_is_declined() -> None:
@@ -122,7 +150,7 @@ def test_requested_fact_has_priority_over_generic_workflow_semantics() -> None:
     assert decision.facts_to_communicate == ("name",)
 
 
-def test_interpreter_accepts_general_semantics_and_receives_objective() -> None:
+def test_ollama_fallback_accepts_general_semantics_and_receives_objective() -> None:
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -164,7 +192,7 @@ def test_interpreter_accepts_general_semantics_and_receives_objective() -> None:
         meaning = interpreter.interpret(
             scenario=scenario,
             state=build_initial_state(scenario),
-            agent_turn="Would you like me to set up a patient profile?",
+            agent_turn="I'm able to create a patient profile if needed. Is that something you'd like?",
         )
     finally:
         interpreter.close()
@@ -183,10 +211,10 @@ def test_interpreter_accepts_general_semantics_and_receives_objective() -> None:
     assert isinstance(user_message, dict)
 
     context = json.loads(user_message["content"])
-    assert "conversation_objective" not in context
+    assert context["conversation_objective"] == scenario.objective
     assert (
         context["latest_tested_agent_turn"]
-        == "Would you like me to set up a patient profile?"
+        == "I'm able to create a patient profile if needed. Is that something you'd like?"
     )
 
     serialized_prompt = json.dumps(messages)

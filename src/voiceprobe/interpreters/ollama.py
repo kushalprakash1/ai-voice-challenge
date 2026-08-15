@@ -19,6 +19,7 @@ import httpx
 
 from voiceprobe.conversation.meaning import TurnMeaning
 from voiceprobe.conversation.state import PatientState
+from voiceprobe.interpreters.semantic_gate import deterministic_turn_meaning
 from voiceprobe.scenarios.models import PatientScenario
 
 DEFAULT_MODEL = "qwen3:1.7b"
@@ -122,6 +123,18 @@ class OllamaConversationInterpreter:
         if state.scenario_id != scenario.scenario_id:
             raise ValueError("PatientState does not belong to the supplied scenario.")
 
+        # Obvious speech acts should not launch speculative model inference.
+        # The authoritative interpret() path will run the same deterministic
+        # gate when the finalized turn arrives.
+        if (
+            deterministic_turn_meaning(
+                scenario=scenario,
+                agent_turn=agent_turn,
+            )
+            is not None
+        ):
+            return False
+
         with self._prefetch_lock:
             existing = self._prefetch_future
 
@@ -183,8 +196,22 @@ class OllamaConversationInterpreter:
         state: PatientState,
         agent_turn: str,
     ) -> TurnMeaning:
-        """Use a matching speculative result or run normal extraction."""
+        """Use deterministic meaning, speculative output, or normal extraction."""
         normalized_turn = self._normalize_turn(agent_turn)
+
+        if state.scenario_id != scenario.scenario_id:
+            raise ValueError("PatientState does not belong to the supplied scenario.")
+
+        deterministic = deterministic_turn_meaning(
+            scenario=scenario,
+            agent_turn=agent_turn,
+        )
+
+        if deterministic is not None:
+            # A partial speculative request may already be running. Mark it
+            # unusable; never allow it to overwrite a deterministic result.
+            self.invalidate_prefetch()
+            return deterministic
 
         with self._prefetch_lock:
             future = self._prefetch_future
@@ -281,6 +308,7 @@ class OllamaConversationInterpreter:
             raise ValueError("PatientState does not belong to the supplied scenario.")
 
         context = {
+            "conversation_objective": scenario.objective,
             "latest_tested_agent_turn": agent_turn,
         }
 
@@ -378,6 +406,28 @@ class OllamaConversationInterpreter:
                             "patient attribute into the closest known patient fact. "
                             "Use other when neither category fits, and none when "
                             "there is no response-triggering question. "
+                            "Classify the speech act before extracting patient facts. "
+                            "A question asking whether the agent should, may, or is "
+                            "wanted to perform an action is workflow_permission and "
+                            "yes_no. This includes forms such as 'Would you like me to "
+                            "...?', 'Do you want me to ...?', 'Should I ...?', and "
+                            "'May I ...?'. The object of that proposed agent action is "
+                            "not automatically a patient fact being requested. For "
+                            "example, asking permission to create or prepare a profile "
+                            "does not itself request the patient's name, insurance, or "
+                            "other profile fields. Asking permission to check appointment "
+                            "availability for a stated day or time does not itself request "
+                            "preferred_day or preferred_time. Populate requested_facts "
+                            "only when the patient is actually being asked to provide, "
+                            "state, verify, confirm, or repeat the value of that fact. "
+                            "Mentions of a fact inside an action the agent proposes to "
+                            "perform are not requested_facts. "
+                            "Patient_attribute is for questions about whether the patient "
+                            "is, has, or satisfies an attribute, not for questions about "
+                            "whether the agent should perform an action. "
+                            "A request to check availability is not an appointment_offer "
+                            "unless the agent actually presents a concrete available slot "
+                            "to the patient. "
                             "workflow_direction is determined only from the literal "
                             "direction of the agent action in the current utterance. "
                             "Do not compare it with any larger scheduling objective, "
@@ -411,14 +461,25 @@ class OllamaConversationInterpreter:
                             "continue, create or prepare something needed for intake, "
                             "verify information, or proceed with the scheduling flow. "
                             "For a yes_no workflow request, classify workflow_relation "
-                            "against conversation_objective. If agreeing allows normal "
-                            "intake, identification, profile creation, verification, "
-                            "continuation, or scheduling to proceed, use "
-                            "advances_objective. If agreeing would stop, cancel, "
-                            "abandon, or reverse the scheduling process, use "
-                            "opposes_objective. If the question asks about a patient "
-                            "attribute rather than permission to perform workflow, use "
-                            "none unless that attribute itself changes the objective. "
+                            "against conversation_objective. Use advances_objective only "
+                            "when agreeing directly performs the objective or when the "
+                            "agent indicates that the requested action is required or "
+                            "necessary to continue toward the objective. Required intake, "
+                            "identity or eligibility verification, checking requested "
+                            "appointment availability, and scheduling can advance the "
+                            "objective when the utterance makes that relationship clear. "
+                            "An optional side workflow does not automatically advance the "
+                            "objective merely because it concerns setup, intake, an "
+                            "account, a profile, preferences, or another ancillary action. "
+                            "When the agent presents a step as optional and does not "
+                            "indicate that it is required to continue toward the objective, "
+                            "use none. If agreeing would stop, cancel, abandon, terminate, "
+                            "or reverse progress toward the objective, use "
+                            "opposes_objective. Use uncertain when the utterance does not "
+                            "provide enough information to determine the relationship. "
+                            "If the question asks about a patient attribute rather than "
+                            "permission to perform workflow, use none unless that attribute "
+                            "itself changes the objective. "
                             "Do not force unsupported patient attributes into the "
                             "known fact ontology. For example, new-versus-returning "
                             "patient status is not name. If an unsupported fact is "

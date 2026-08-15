@@ -281,10 +281,12 @@ class OllamaNaturalVerbalizer:
 
         if decision.kind is CommunicationKind.DECLINE_WORKFLOW:
             return (
-                "Briefly decline the caller's workflow request because it would "
-                "oppose the current scheduling objective. Prefer a short response "
-                "such as 'No, I'd like to continue.' Do not add patient facts or "
-                "invent scheduling details."
+                "Briefly decline the caller's workflow request when accepting it "
+                "would not advance the current scheduling objective, or when the "
+                "caller is trying to end the conversation before the objective is "
+                "complete. Prefer a short response such as 'No, I'd like to "
+                "continue scheduling.' Do not add patient facts or invent "
+                "scheduling details."
             )
 
         if decision.kind is CommunicationKind.CLARIFY:
