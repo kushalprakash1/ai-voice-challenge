@@ -30,8 +30,8 @@ from voiceprobe.autonomous_phone import (
     DEFAULT_OLLAMA_URL,
     DEFAULT_PORT,
     DEFAULT_VOICE,
+    build_pre_rendered_tts_cache,
     handle_call,
-    synthesize,
     terminate_audiosocket_connection,
 )
 from voiceprobe.conversation.session import PatientSession
@@ -342,6 +342,7 @@ class AsteriskAssessmentCallAdapter:
         self._call_id_factory = call_id_factory
 
         self._pipeline: KPipeline | None = None
+        self._tts_pcm_cache: dict[str, bytes] | None = None
         self._http_client: httpx.Client | None = None
 
         self._media_executor: _MediaExecutor = (
@@ -558,6 +559,7 @@ class AsteriskAssessmentCallAdapter:
                                 pipeline=pipeline,
                                 voice=self._voice,
                                 recorder=recorder,
+                                tts_pcm_cache=self._tts_pcm_cache,
                             )
                     finally:
                         call_finished.set()
@@ -690,14 +692,15 @@ class AsteriskAssessmentCallAdapter:
                 repo_id="hexgrad/Kokoro-82M",
             )
 
-            # Warm the selected voice before the listener can possibly dial.
-            synthesize(
-                pipeline=pipeline,
-                voice=self._voice,
-                text="Hello.",
-            )
-
             self._pipeline = pipeline
+
+        if self._tts_pcm_cache is None:
+            # Pre-render time-critical deterministic responses before the
+            # listener can possibly originate a real assessment call.
+            self._tts_pcm_cache = build_pre_rendered_tts_cache(
+                pipeline=self._pipeline,
+                voice=self._voice,
+            )
 
         if self._http_client is None:
             self._http_client = httpx.Client(

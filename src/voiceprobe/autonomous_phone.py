@@ -71,6 +71,18 @@ DEFAULT_VOICE = "af_heart"
 ECHO_GUARD_SECONDS = 0.35
 
 
+# High-frequency responses produced verbatim by the deterministic
+# verbalizer. These are rendered to telephony-ready PCM before dialing
+# so time-critical replies do not wait for Kokoro inference.
+PRE_RENDERED_TTS_TEXTS = (
+    "No, I'd like to continue scheduling.",
+    "Yes, please.",
+    "Yes, that works.",
+    "Could you repeat that?",
+    "Okay, thank you. Bye.",
+)
+
+
 def build_scenario(
     scenario_id: str = DEFAULT_SCENARIO_ID,
 ) -> PatientScenario:
@@ -103,6 +115,38 @@ def synthesize(
         raise RuntimeError("Kokoro generated no audio.")
 
     return np.concatenate(pieces)
+
+
+def build_pre_rendered_tts_cache(
+    *,
+    pipeline: KPipeline,
+    voice: str,
+    texts: tuple[str, ...] = PRE_RENDERED_TTS_TEXTS,
+) -> dict[str, bytes]:
+    """Render fixed deterministic responses to 8 kHz PCM16 before dialing.
+
+    Cache keys use the exact normalized text that process_turns sends to
+    Kokoro. A missing entry is always safe because the live path falls back
+    to ordinary synthesis.
+    """
+    cache: dict[str, bytes] = {}
+
+    for patient_text in texts:
+        tts_text = normalize_text_for_tts(patient_text)
+
+        if tts_text in cache:
+            continue
+
+        audio_24k = synthesize(
+            pipeline=pipeline,
+            voice=voice,
+            text=tts_text,
+        )
+
+        audio_8k = resample_to_telephony(audio_24k)
+        cache[tts_text] = float_audio_to_pcm16(audio_8k)
+
+    return cache
 
 
 def send_audio(
@@ -165,6 +209,7 @@ def process_turns(
     busy: threading.Event,
     stop: threading.Event,
     recorder: RunArtifactRecorder,
+    tts_pcm_cache: dict[str, bytes] | None = None,
 ) -> None:
     """Process complete ASR turns sequentially."""
     while True:
@@ -288,19 +333,41 @@ def process_turns(
                     flush=True,
                 )
 
-            audio_24k = synthesize(
-                pipeline=pipeline,
-                voice=voice,
-                text=tts_text,
+            cached_pcm16 = (
+                tts_pcm_cache.get(tts_text)
+                if tts_pcm_cache is not None
+                else None
             )
 
-            tts_seconds = perf_counter() - tts_started
+            if cached_pcm16 is not None:
+                pcm16 = cached_pcm16
+                tts_seconds = 0.0
+                audio_seconds = len(pcm16) / (8_000 * 2)
 
-            audio_8k = resample_to_telephony(audio_24k)
+                recorder.record_event(
+                    "tts_cache_hit",
+                    tts_text=tts_text,
+                    pcm16_bytes=len(pcm16),
+                )
+            else:
+                audio_24k = synthesize(
+                    pipeline=pipeline,
+                    voice=voice,
+                    text=tts_text,
+                )
 
-            pcm16 = float_audio_to_pcm16(audio_8k)
+                tts_seconds = perf_counter() - tts_started
 
-            audio_seconds = len(audio_8k) / 8_000
+                audio_8k = resample_to_telephony(audio_24k)
+
+                pcm16 = float_audio_to_pcm16(audio_8k)
+
+                audio_seconds = len(audio_8k) / 8_000
+
+                recorder.record_event(
+                    "tts_cache_miss",
+                    tts_text=tts_text,
+                )
 
             response_prep_seconds = time.monotonic() - turn.completed_at
 
@@ -448,6 +515,7 @@ def handle_call(
     pipeline: KPipeline,
     voice: str,
     recorder: RunArtifactRecorder,
+    tts_pcm_cache: dict[str, bytes] | None = None,
 ) -> uuid.UUID | None:
     """Run one autonomous half-duplex AudioSocket call."""
     turn_queue: queue.Queue[CompletedTurn | None] = queue.Queue()
@@ -530,6 +598,7 @@ def handle_call(
             "busy": busy,
             "stop": stop,
             "recorder": recorder,
+            "tts_pcm_cache": tts_pcm_cache,
         },
         daemon=True,
     )
