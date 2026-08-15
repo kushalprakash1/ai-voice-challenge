@@ -10,6 +10,7 @@ the scheduling objective complete.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Protocol, runtime_checkable
@@ -20,6 +21,9 @@ from voiceprobe.agents.brain import (
     PatientBrain,
 )
 from voiceprobe.agents.probes import ProbeProgress, apply_probe_policy
+from voiceprobe.conversation.exploration_policy import (
+    apply_exploration_policy,
+)
 from voiceprobe.conversation.grounding import (
     GroundedTurnMeaning,
     ground_turn_meaning,
@@ -53,6 +57,28 @@ from voiceprobe.conversation.state import (
     record_agent_turn,
 )
 from voiceprobe.scenarios.models import PatientScenario
+
+
+_EXPLORATION_MODE_ENV = "VOICEPROBE_EXPLORATION_MODE"
+
+
+def _exploration_mode_from_environment() -> bool:
+    """Read an explicit one-call exploration feature flag.
+
+    Only 0 and 1 are accepted so a typo cannot silently switch production
+    conversation behavior.
+    """
+    value = os.environ.get(_EXPLORATION_MODE_ENV)
+
+    if value is None or value == "" or value == "0":
+        return False
+
+    if value == "1":
+        return True
+
+    raise ValueError(
+        f"{_EXPLORATION_MODE_ENV} must be exactly '0' or '1'."
+    )
 
 
 class ConversationInterpreter(Protocol):
@@ -151,6 +177,10 @@ class PatientSession:
         self._verbalizer = verbalizer
         self._brain = brain or PatientBrain()
 
+        # Normal mode remains the default. Exploration must be explicitly
+        # enabled for a single process with VOICEPROBE_EXPLORATION_MODE=1.
+        self._exploration_mode = _exploration_mode_from_environment()
+
         self._state = build_initial_state(scenario)
         self._progress = AppointmentProgress()
         self._probe_progress = ProbeProgress()
@@ -177,6 +207,11 @@ class PatientSession:
     def goal_context(self) -> GoalContext:
         """Persistent workflow focus for the scheduling mission."""
         return self._goal_context
+
+    @property
+    def exploration_mode(self) -> bool:
+        """Whether this call explicitly enabled cooperative exploration."""
+        return self._exploration_mode
 
     def prefetch_agent_turn(
         self,
@@ -292,14 +327,30 @@ class PatientSession:
         # Semantic interpretation may describe what was said and the
         # brain may propose a response, but neither may redirect the
         # patient into an unrelated workflow.
-        decision, next_goal_context = apply_goal_policy(
-            scenario=self._scenario,
-            grounded=grounded,
-            progress=pre_turn_progress,
-            agent_turn=agent_turn,
-            context=pre_turn_goal_context,
-            base_decision=decision,
-        )
+        if self._exploration_mode:
+            # Exploration intentionally bypasses only the final scheduling
+            # mission guard. Interpreter, grounding, PatientBrain, probes,
+            # patient truth, appointment progress, and state validation all
+            # remain active.
+            decision = apply_exploration_policy(
+                scenario=self._scenario,
+                grounded=grounded,
+                progress=pre_turn_progress,
+                base_decision=decision,
+            )
+
+            # GoalContext belongs to normal scheduling mode. Preserve it
+            # unchanged rather than manufacturing side-workflow state.
+            next_goal_context = pre_turn_goal_context
+        else:
+            decision, next_goal_context = apply_goal_policy(
+                scenario=self._scenario,
+                grounded=grounded,
+                progress=pre_turn_progress,
+                agent_turn=agent_turn,
+                context=pre_turn_goal_context,
+                base_decision=decision,
+            )
 
         state_with_agent = record_agent_turn(
             pre_turn_state,
