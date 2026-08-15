@@ -9,6 +9,10 @@ import typer
 
 from voiceprobe.config import Settings
 from voiceprobe.dialer import build_call_plan
+from voiceprobe.execution import (
+    prepare_execution,
+    write_execution_manifest,
+)
 from voiceprobe.scenarios.catalog import list_scenarios
 from voiceprobe.suite import build_suite_plan
 
@@ -85,6 +89,38 @@ def suite_validate() -> None:
         "worst_case_duration_minutes": (suite_plan.worst_case_duration_minutes),
         "dry_run": suite_plan.dry_run,
         "live_execution_enabled": (suite_plan.live_execution_enabled),
+    }
+
+    typer.echo(
+        json.dumps(
+            payload,
+            indent=2,
+        )
+    )
+
+
+@suite_app.command("prepare")
+def suite_prepare() -> None:
+    """Write a local execution manifest without placing any calls."""
+    settings = Settings()  # type: ignore[call-arg]
+    policy = settings.call_policy()
+    plan = build_suite_plan(policy)
+
+    manifest = prepare_execution(
+        policy,
+        plan,
+    )
+
+    manifest_path = write_execution_manifest(manifest)
+
+    payload = {
+        "prepared": True,
+        "execution_id": manifest.execution_id,
+        "manifest_path": str(manifest_path),
+        "call_count": manifest.call_count,
+        "destination": manifest.destination,
+        "dry_run": manifest.dry_run,
+        "live_execution": False,
     }
 
     typer.echo(
