@@ -40,7 +40,12 @@ from voiceprobe.media.live_asr import (
     pcm16_to_float32,
     recv_exact,
 )
-from voiceprobe.scenarios.models import PatientFacts, PatientScenario
+from voiceprobe.scenarios.catalog import (
+    DEFAULT_SCENARIO_ID,
+    get_scenario,
+    scenario_ids,
+)
+from voiceprobe.scenarios.models import PatientScenario
 from voiceprobe.tts.telephony import (
     FRAME_DURATION_SECONDS,
     build_audiosocket_packet,
@@ -62,21 +67,11 @@ DEFAULT_VOICE = "af_heart"
 ECHO_GUARD_SECONDS = 0.35
 
 
-def build_scenario() -> PatientScenario:
-    """Patient truth used for the first autonomous phone diagnostic."""
-    return PatientScenario(
-        scenario_id="autonomous-phone-diagnostic",
-        objective="Schedule an appointment for Friday afternoon.",
-        facts=PatientFacts(
-            name="Alex Morgan",
-            complaint="right shoulder pain",
-            duration="five days",
-            date_of_birth="April 12, 1998",
-            insurance="Blue Cross",
-            preferred_day="Friday",
-            preferred_time="afternoon",
-        ),
-    )
+def build_scenario(
+    scenario_id: str = DEFAULT_SCENARIO_ID,
+) -> PatientScenario:
+    """Resolve immutable patient truth for one autonomous call."""
+    return get_scenario(scenario_id)
 
 
 def synthesize(
@@ -570,6 +565,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
+        "--scenario",
+        choices=scenario_ids(),
+        default=DEFAULT_SCENARIO_ID,
+        help=(f"Immutable patient scenario to run. Default: {DEFAULT_SCENARIO_ID}"),
+    )
+
+    parser.add_argument(
         "--host",
         default=DEFAULT_HOST,
     )
@@ -626,7 +628,9 @@ def main(
 
     print(f"Kokoro warm-up complete in {perf_counter() - warm_started:.3f}s")
 
-    scenario = build_scenario()
+    scenario = build_scenario(args.scenario)
+
+    print(f"Scenario: {scenario.scenario_id} | {scenario.objective}")
 
     with httpx.Client(
         timeout=20.0,
