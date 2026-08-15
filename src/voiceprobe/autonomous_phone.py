@@ -75,7 +75,7 @@ ECHO_GUARD_SECONDS = 0.35
 # verbalizer. These are rendered to telephony-ready PCM before dialing
 # so time-critical replies do not wait for Kokoro inference.
 PRE_RENDERED_TTS_TEXTS = (
-    "No, I'd like to continue scheduling.",
+    "No, I need an appointment.",
     "Yes, please.",
     "Yes, that works.",
     "Could you repeat that?",

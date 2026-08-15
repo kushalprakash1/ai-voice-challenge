@@ -299,7 +299,7 @@ def test_full_previous_failure_sequence_requires_no_ollama() -> None:
         (
             "Would you like to create a demo patient profile?",
             CommunicationKind.DECLINE_WORKFLOW,
-            "No, I'd like to continue scheduling.",
+            "No, I need an appointment.",
         ),
         (
             "Before I can schedule you, I need to verify your date of birth.",
@@ -411,7 +411,7 @@ def test_real_call_four_great_day_session_pushes_back() -> None:
         )
 
         assert first.decision.kind.value == "decline_workflow"
-        assert first.patient_text == "No, I'd like to continue scheduling."
+        assert first.patient_text == "No, I need an appointment."
 
         final = session.handle_agent_turn(
             "You can scan the profile later if you'd like. "
@@ -420,7 +420,7 @@ def test_real_call_four_great_day_session_pushes_back() -> None:
 
         assert final.meaning.conversation_end_requested is True
         assert final.decision.kind.value == "decline_workflow"
-        assert final.patient_text == "No, I'd like to continue scheduling."
+        assert final.patient_text == "No, I need an appointment."
         assert session.progress.objective_complete is False
 
     finally:

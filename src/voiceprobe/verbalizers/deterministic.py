@@ -151,7 +151,7 @@ class DeterministicNaturalVerbalizer:
             return "Yes, please."
 
         if kind is CommunicationKind.DECLINE_WORKFLOW:
-            return "No, I'd like to continue scheduling."
+            return "No, I need an appointment."
 
         if kind is CommunicationKind.CLARIFY:
             return "Could you clarify that?"

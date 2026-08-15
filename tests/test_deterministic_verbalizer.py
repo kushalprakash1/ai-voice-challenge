@@ -75,7 +75,7 @@ def test_workflow_responses_are_stable() -> None:
                 kind=CommunicationKind.DECLINE_WORKFLOW,
             )
         )
-        == "No, I'd like to continue scheduling."
+        == "No, I need an appointment."
     )
 
 

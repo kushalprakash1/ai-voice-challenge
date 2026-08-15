@@ -10,7 +10,7 @@ import voiceprobe.autonomous_phone as phone
 from voiceprobe.agents.brain import CommunicationKind
 
 
-CRITICAL_TEXT = "No, I'd like to continue scheduling."
+CRITICAL_TEXT = "No, I need an appointment."
 
 
 class FakeRecorder:
