@@ -25,7 +25,10 @@ import httpx
 import numpy as np
 from kokoro import KPipeline
 
-from voiceprobe.agents.brain import PatientBrain
+from voiceprobe.agents.brain import (
+    CommunicationKind,
+    PatientBrain,
+)
 from voiceprobe.artifacts.recorder import RunArtifactRecorder
 from voiceprobe.conversation.session import PatientSession
 from voiceprobe.conversation.turns import CompletedTurn
@@ -49,6 +52,7 @@ from voiceprobe.scenarios.models import PatientScenario
 from voiceprobe.tts.telephony import (
     FRAME_DURATION_SECONDS,
     build_audiosocket_packet,
+    build_audiosocket_terminate_packet,
     float_audio_to_pcm16,
     iter_pcm_frames,
     normalize_text_for_tts,
@@ -124,6 +128,31 @@ def send_audio(
 
         if delay > 0:
             time.sleep(delay)
+
+
+def terminate_audiosocket_connection(
+    connection: socket.socket,
+) -> bool:
+    """Request AudioSocket termination and unblock the receive loop.
+
+    Returns whether the explicit protocol termination frame was sent.
+    Socket shutdown is attempted regardless, because the remote side may
+    already have disconnected by the time the local patient finishes.
+    """
+    packet_sent = False
+
+    try:
+        connection.sendall(build_audiosocket_terminate_packet())
+        packet_sent = True
+    except OSError:
+        pass
+
+    try:
+        connection.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+
+    return packet_sent
 
 
 def process_turns(
@@ -308,8 +337,33 @@ def process_turns(
 
             print("Speech complete.")
 
-            # Keep inbound ASR muted briefly after playback so PSTN echo
-            # does not immediately become the next receptionist turn.
+            if result.decision.kind is CommunicationKind.END_CONVERSATION:
+                recorder.record_event(
+                    "local_hangup_requested",
+                    decision=result.decision.kind.value,
+                    patient_text=result.patient_text,
+                )
+
+                # Prevent any new ASR turn from entering the worker while
+                # the AudioSocket receive loop is being unblocked.
+                stop.set()
+
+                packet_sent = terminate_audiosocket_connection(connection)
+
+                recorder.record_event(
+                    "local_hangup_signaled",
+                    termination_packet_sent=packet_sent,
+                )
+
+                print(
+                    "VoiceProbe ended the call.",
+                    flush=True,
+                )
+
+                return
+
+            # Keep inbound ASR muted briefly after ordinary playback so PSTN
+            # echo does not immediately become the next receptionist turn.
             time.sleep(ECHO_GUARD_SECONDS)
 
         except (
@@ -447,10 +501,17 @@ def handle_call(
             )
 
             if header is None:
-                recorder.record_event(
-                    "audiosocket_disconnected",
-                )
-                print("AudioSocket disconnected.")
+                if stop.is_set():
+                    recorder.record_event(
+                        "audiosocket_local_disconnect_confirmed",
+                    )
+                    print("AudioSocket closed after local hangup.")
+                else:
+                    recorder.record_event(
+                        "audiosocket_disconnected",
+                    )
+                    print("AudioSocket disconnected.")
+
                 break
 
             message_type = header[0]
@@ -465,10 +526,17 @@ def handle_call(
             )
 
             if payload is None:
-                recorder.record_event(
-                    "audiosocket_payload_disconnected",
-                )
-                print("AudioSocket disconnected during payload.")
+                if stop.is_set():
+                    recorder.record_event(
+                        "audiosocket_local_disconnect_confirmed",
+                    )
+                    print("AudioSocket closed after local hangup.")
+                else:
+                    recorder.record_event(
+                        "audiosocket_payload_disconnected",
+                    )
+                    print("AudioSocket disconnected during payload.")
+
                 break
 
             if message_type == TYPE_HANGUP:

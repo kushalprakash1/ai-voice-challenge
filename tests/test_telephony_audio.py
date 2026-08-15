@@ -84,3 +84,11 @@ def test_audiosocket_header_encodes_type_and_length() -> None:
         == FRAME_BYTES
     )
     assert packet[3:] == payload
+
+
+def test_audiosocket_terminate_packet_is_zero_length_hangup() -> None:
+    from voiceprobe.tts.telephony import (
+        build_audiosocket_terminate_packet,
+    )
+
+    assert build_audiosocket_terminate_packet() == b"\x00\x00\x00"

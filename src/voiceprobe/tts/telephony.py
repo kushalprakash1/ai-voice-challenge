@@ -151,6 +151,11 @@ def iter_pcm_frames(
         yield frame
 
 
+def build_audiosocket_terminate_packet() -> bytes:
+    """Build the AudioSocket zero-length termination frame."""
+    return bytes((0x00, 0x00, 0x00))
+
+
 def build_audiosocket_packet(
     payload: bytes,
     *,
