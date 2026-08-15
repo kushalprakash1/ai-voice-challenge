@@ -30,6 +30,7 @@ AUDIO_SAMPLE_RATE_HZ = 8_000
 TURN_GAP_SECONDS = 2.0
 COMPLETE_TURN_FLUSH_SECONDS = 0.65
 SHORT_TURN_FLUSH_SECONDS = 1.0
+SHORT_TURN_PREFETCH_DELAY_SECONDS = 0.50
 INCOMPLETE_TURN_FLUSH_SECONDS = 1.8
 
 _SINGLE_WORD_FRAGMENT_STARTERS = frozenset(
@@ -131,6 +132,8 @@ class ConsoleTranscriptListener(TranscriptEventListener):
         self._lock = threading.Lock()
         self._flush_timer: threading.Timer | None = None
         self._generation = 0
+        self._candidate_timer: threading.Timer | None = None
+        self._candidate_generation = 0
 
     def on_line_started(self, event: Any) -> None:
         print(f"[started] {event.line.text}", flush=True)
@@ -150,6 +153,8 @@ class ConsoleTranscriptListener(TranscriptEventListener):
         flush_delay = self._flush_delay_for_text(text)
 
         with self._lock:
+            self._cancel_candidate_timer_locked()
+
             previous = self._assembler.add_line(
                 text,
                 completed_at=completed_at,
@@ -162,6 +167,16 @@ class ConsoleTranscriptListener(TranscriptEventListener):
 
             if flush_delay == COMPLETE_TURN_FLUSH_SECONDS:
                 candidate = self._assembler.pending_text
+            elif (
+                flush_delay == SHORT_TURN_FLUSH_SECONDS
+                and self._on_candidate is not None
+            ):
+                pending_text = self._assembler.pending_text
+                if pending_text:
+                    self._schedule_candidate_locked(
+                        pending_text,
+                        SHORT_TURN_PREFETCH_DELAY_SECONDS,
+                    )
 
         if candidate is not None and self._on_candidate is not None:
             self._on_candidate(candidate)
@@ -170,6 +185,7 @@ class ConsoleTranscriptListener(TranscriptEventListener):
         """Immediately emit any pending conversational turn."""
         with self._lock:
             self._cancel_timer_locked()
+            self._cancel_candidate_timer_locked()
 
             turn = self._assembler.flush()
 
@@ -180,12 +196,15 @@ class ConsoleTranscriptListener(TranscriptEventListener):
         """Release timer resources."""
         with self._lock:
             self._cancel_timer_locked()
+            self._cancel_candidate_timer_locked()
 
     def _note_speech_activity(self) -> None:
         """Postpone completion and invalidate stale provisional work."""
         had_pending_turn = False
 
         with self._lock:
+            self._cancel_candidate_timer_locked()
+
             if self._assembler.has_pending_turn:
                 had_pending_turn = True
                 self._schedule_flush_locked(INCOMPLETE_TURN_FLUSH_SECONDS)
@@ -276,11 +295,57 @@ class ConsoleTranscriptListener(TranscriptEventListener):
                 return
 
             self._flush_timer = None
+            self._cancel_candidate_timer_locked()
 
             turn = self._assembler.flush()
 
             if turn is not None:
                 self._emit_turn(turn)
+
+    def _schedule_candidate_locked(
+        self,
+        candidate_text: str,
+        delay_seconds: float,
+    ) -> None:
+        self._cancel_candidate_timer_locked()
+        self._candidate_generation += 1
+        generation = self._candidate_generation
+
+        timer = threading.Timer(
+            delay_seconds,
+            self._emit_candidate_if_current,
+            args=(generation, candidate_text),
+        )
+        timer.daemon = True
+        self._candidate_timer = timer
+        timer.start()
+
+    def _emit_candidate_if_current(
+        self,
+        generation: int,
+        candidate_text: str,
+    ) -> None:
+        candidate: str | None = None
+
+        with self._lock:
+            if generation != self._candidate_generation:
+                return
+
+            self._candidate_timer = None
+            if (
+                self._assembler.has_pending_turn
+                and self._assembler.pending_text == candidate_text
+            ):
+                candidate = candidate_text
+
+        if candidate is not None and self._on_candidate is not None:
+            self._on_candidate(candidate)
+
+    def _cancel_candidate_timer_locked(self) -> None:
+        self._candidate_generation += 1
+        if self._candidate_timer is not None:
+            self._candidate_timer.cancel()
+            self._candidate_timer = None
 
     def _cancel_timer_locked(self) -> None:
         if self._flush_timer is not None:
