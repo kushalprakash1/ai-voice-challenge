@@ -505,6 +505,100 @@ def _workflow_relation(
     return WorkflowRelation.UNCERTAIN
 
 
+def _routine_intake_fast_facts(
+    text: str,
+) -> tuple[str, ...]:
+    """Resolve obvious routine intake slots without invoking an LLM."""
+    text = _normalize(text)
+
+    if not text:
+        return ()
+
+    request_like = (
+        "?" in text
+        or "need your" in text
+        or "please provide" in text
+        or "please tell me" in text
+        or "what should i enter" in text
+        or "what should i put" in text
+        or "what should i record" in text
+    )
+
+    if not request_like:
+        return ()
+
+    # Appointment type must outrank generic "new patient" wording.
+    if (
+        "type of appointment" in text
+        or "appointment type" in text
+        or (
+            "new patient consultation" in text
+            and (
+                "follow-up" in text
+                or "general office visit" in text
+                or "something else" in text
+            )
+        )
+        or (
+            "routine checkup" in text
+            and (
+                "follow-up" in text
+                or "urgent concern" in text
+                or "specific procedure" in text
+            )
+        )
+    ):
+        return ("appointment_type",)
+
+    first_name = "first name" in text
+
+    last_name = (
+        "last name" in text
+        or "surname" in text
+        or "family name" in text
+    )
+
+    if first_name and last_name:
+        return (
+            "first_name",
+            "last_name",
+        )
+
+    if first_name:
+        return ("first_name",)
+
+    if last_name:
+        return ("last_name",)
+
+    asks_visited_before = (
+        "visited us before" in text
+        or "visited before" in text
+        or "been here before" in text
+        or "seen us before" in text
+        or "seen you before" in text
+    )
+
+    asks_patient_status = (
+        "are you a patient" in text
+        or "new patient" in text
+        or "existing patient" in text
+        or "returning patient" in text
+    )
+
+    if asks_patient_status or asks_visited_before:
+        facts: list[str] = []
+
+        if asks_patient_status:
+            facts.append("patient_status")
+
+        if asks_visited_before:
+            facts.append("visited_before")
+
+        return tuple(facts)
+
+    return ()
+
+
 def deterministic_turn_meaning(
     *,
     scenario: PatientScenario,
@@ -672,7 +766,9 @@ def deterministic_turn_meaning(
     if _DECLARATIVE_NAME_REQUEST_RE.search(text) is not None:
         facts = ("name",)
     else:
-        facts = _requested_facts(text)
+        facts = _routine_intake_fast_facts(text)
+        if not facts:
+            facts = _requested_facts(text)
 
     if facts:
         return TurnMeaning(

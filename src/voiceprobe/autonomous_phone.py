@@ -81,6 +81,15 @@ PRE_RENDERED_TTS_TEXTS = (
     "Yes, that works.",
     "Could you repeat that?",
     "Okay, thank you. Bye.",
+    'Alex.',
+    'Morgan.',
+    'April 12, 1998.',
+    'Blue Cross.',
+    'Friday afternoon.',
+    'I need a new patient consultation.',
+    "I'm a new patient.",
+    "No, I haven't visited before.",
+    "I'm a new patient. No, I haven't visited before.",
 )
 
 
