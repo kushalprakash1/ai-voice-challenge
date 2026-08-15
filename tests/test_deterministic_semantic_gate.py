@@ -351,3 +351,78 @@ def test_full_previous_failure_sequence_requires_no_ollama() -> None:
     assert session.progress.booking_confirmed
     assert session.progress.objective_complete
     assert session.state.objective_complete
+
+
+def test_real_call_four_great_day_is_premature_end_request() -> None:
+    meaning = deterministic_turn_meaning(
+        scenario=build_scenario(),
+        agent_turn=(
+            "You can scan the profile later if you'd like. "
+            "Have a great day."
+        ),
+    )
+
+    assert meaning is not None
+    assert meaning.conversation_end_requested is True
+    assert meaning.requested_facts == ()
+    assert meaning.appointment_offer is None
+    assert not meaning.booking_confirmed
+
+
+def test_real_call_four_great_day_session_pushes_back() -> None:
+    import httpx
+
+    from voiceprobe.agents.brain import PatientBrain
+    from voiceprobe.conversation.session import PatientSession
+    from voiceprobe.interpreters.ollama import (
+        OllamaConversationInterpreter,
+    )
+    from voiceprobe.scenarios.catalog import get_scenario
+    from voiceprobe.verbalizers.deterministic import (
+        DeterministicNaturalVerbalizer,
+    )
+
+    def forbidden_ollama(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(
+            f"Ollama unexpectedly called: {request.method} {request.url}"
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(forbidden_ollama),
+    )
+
+    interpreter = OllamaConversationInterpreter(
+        model="qwen3:1.7b",
+        client=client,
+    )
+
+    session = PatientSession(
+        scenario=get_scenario("autonomous-phone-diagnostic"),
+        interpreter=interpreter,
+        verbalizer=DeterministicNaturalVerbalizer(),
+        brain=PatientBrain(),
+    )
+
+    try:
+        first = session.handle_agent_turn(
+            "This call may be recorded for quality and training purposes. "
+            "Thank you for calling Pivot Point Orthopedics. "
+            "Would you like to create a demo patient profile?"
+        )
+
+        assert first.decision.kind.value == "decline_workflow"
+        assert first.patient_text == "No, I'd like to continue scheduling."
+
+        final = session.handle_agent_turn(
+            "You can scan the profile later if you'd like. "
+            "Have a great day."
+        )
+
+        assert final.meaning.conversation_end_requested is True
+        assert final.decision.kind.value == "decline_workflow"
+        assert final.patient_text == "No, I'd like to continue scheduling."
+        assert session.progress.objective_complete is False
+
+    finally:
+        interpreter.close()
+        client.close()

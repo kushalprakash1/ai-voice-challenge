@@ -179,7 +179,7 @@ _END_RE = re.compile(
     r"(?:"
     r"\bgoodbye\b|"
     r"\bbye\b|"
-    r"\bhave a (?:good|nice) day\b|"
+    r"\bhave a (?:good|great|nice|wonderful) day\b|"
     r"\btake care\b"
     r")"
 )
