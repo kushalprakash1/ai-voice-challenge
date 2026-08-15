@@ -241,6 +241,41 @@ class DeterministicNaturalVerbalizer:
 
         key_set = set(keys)
 
+        adaptive_persona_keys = {
+            "patient_status",
+            "visited_before",
+            "appointment_type",
+        }
+
+        if key_set and key_set <= adaptive_persona_keys:
+            sentences: list[str] = []
+
+            if "patient_status" in key_set:
+                sentences.append(
+                    cls._sentence(
+                        f"I'm {values['patient_status']}"
+                    )
+                )
+
+            if "visited_before" in key_set:
+                if scenario.facts.visited_before is True:
+                    sentences.append(
+                        "Yes, I've visited before."
+                    )
+                else:
+                    sentences.append(
+                        "No, I haven't visited before."
+                    )
+
+            if "appointment_type" in key_set:
+                sentences.append(
+                    cls._sentence(
+                        f"I need {values['appointment_type']}"
+                    )
+                )
+
+            return " ".join(sentences)
+
         if key_set == {"complaint", "duration"}:
             return cls._sentence(
                 f"{values['complaint']} for {values['duration']}"

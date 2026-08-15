@@ -191,6 +191,22 @@ _DECLARATIVE_NAME_REQUEST_RE = re.compile(
 )
 
 
+_VALUE_ENTRY_QUESTION_RE = re.compile(
+    r"\b(?:"
+    r"what|which"
+    r")\s+"
+    r"(?:value\s+)?"
+    r"should\s+i\s+"
+    r"(?:"
+    r"enter|"
+    r"put(?:\s+down)?|"
+    r"use|"
+    r"record|"
+    r"write(?:\s+down)?|"
+    r"list"
+    r")\b"
+)
+
 _END_RE = re.compile(
     r"(?:"
     r"\bgoodbye\b|"
@@ -306,8 +322,8 @@ _FACT_REQUEST_CUE_RE = re.compile(
     r"state your|"
     r"repeat your|"
     r"tell me your|"
-    r"i need your|"
-    r"we need your|"
+    r"i (?:just )?need your|"
+    r"we (?:just )?need your|"
     r"i need to verify your|"
     r"we need to verify your|"
     r"i need to confirm your|"
@@ -330,6 +346,18 @@ _FACT_MENTION_PATTERNS: tuple[
     tuple[str, re.Pattern[str]],
     ...
 ] = (
+    (
+        "first_name",
+        re.compile(
+            r"\bfirst\s+name\b"
+        ),
+    ),
+    (
+        "last_name",
+        re.compile(
+            r"\b(?:last\s+name|surname|family\s+name)\b"
+        ),
+    ),
     (
         "name",
         re.compile(
@@ -419,7 +447,16 @@ def _requested_facts(text: str) -> tuple[str, ...]:
         if pattern.search(text) is not None:
             facts.append(fact)
 
-    return tuple(facts)
+    # "first name" and "last name" naturally contain the generic token "name".
+    # Prefer the more precise semantic field rather than returning both.
+    if "first_name" in facts or "last_name" in facts:
+        facts = [
+            fact
+            for fact in facts
+            if fact != "name"
+        ]
+
+    return tuple(dict.fromkeys(facts))
 
 
 def _workflow_relation(
@@ -557,6 +594,29 @@ def deterministic_turn_meaning(
     #
     # cannot disclose the patient's name into the unwanted workflow.
     # --------------------------------------------------------------
+    # A value-entry question asks the caller for information.
+    #
+    # Example:
+    # "I just need your first name. What should I enter for you?"
+    #
+    # Although "should I" appears in the sentence, this is not permission.
+    # It asks the caller which factual value the remote agent should enter.
+    value_entry_facts = _requested_facts(text)
+
+    if (
+        value_entry_facts
+        and _VALUE_ENTRY_QUESTION_RE.search(text) is not None
+    ):
+        return TurnMeaning(
+            response_expectation=ResponseExpectation.FACT,
+            workflow_relation=WorkflowRelation.NONE,
+            question_kind=QuestionKind.PATIENT_ATTRIBUTE,
+            workflow_direction=WorkflowDirection.NONE,
+            topic="patient information",
+            requested_facts=value_entry_facts,
+            conversation_end_requested=end_requested,
+        )
+
     side_workflow = _SIDE_WORKFLOW_RE.search(text) is not None
     required = _REQUIRED_RE.search(text) is not None
     scheduling_context = (

@@ -336,6 +336,7 @@ class PatientSession:
                 scenario=self._scenario,
                 grounded=grounded,
                 progress=pre_turn_progress,
+                agent_turn=agent_turn,
                 base_decision=decision,
             )
 

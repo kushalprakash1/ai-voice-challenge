@@ -21,6 +21,7 @@ from voiceprobe.conversation.meaning import TurnMeaning
 from voiceprobe.conversation.state import PatientState
 from voiceprobe.interpreters.semantic_gate import deterministic_turn_meaning
 from voiceprobe.scenarios.models import PatientScenario
+from voiceprobe.target_memory import target_memory_context
 
 DEFAULT_MODEL = "qwen3:1.7b"
 DEFAULT_URL = "http://127.0.0.1:11434/api/chat"
@@ -310,6 +311,7 @@ class OllamaConversationInterpreter:
         context = {
             "conversation_objective": scenario.objective,
             "latest_tested_agent_turn": agent_turn,
+            "target_memory": target_memory_context(),
         }
 
         response = self._client.post(
@@ -334,7 +336,15 @@ class OllamaConversationInterpreter:
                             "the agent is correct and do not substitute patient "
                             "ground truth. Return structured data only. "
                             "Use this patient-fact ontology: "
-                            "name = the patient's name or identity; "
+                            "name = the patient's full name or general identity; "
+                            "first_name = specifically the patient's given or first name; "
+                            "last_name = specifically the patient's family, surname, or last name; "
+                            "patient_status = whether the caller is a new, returning, or existing patient; "
+                            "visited_before = whether the caller has visited, been seen by, "
+                            "or been a patient at this practice before; "
+                            "appointment_type = the requested appointment category, such as "
+                            "new-patient consultation, follow-up, routine/general office visit, "
+                            "urgent concern, or procedure; "
                             "complaint = symptoms, body problem, reason for the "
                             "visit, reason for calling, or what brought them in; "
                             "duration = how long the problem has existed or when "
@@ -354,6 +364,19 @@ class OllamaConversationInterpreter:
                             "requests name. 'Who are you covered through?' "
                             "requests insurance. 'Which day works?' requests "
                             "preferred_day. "
+                            "Important hard-negative examples from observed calls: "
+                            "'Would you like to create a demo patient profile?' is a "
+                            "workflow_permission and does not request a name. "
+                            "'For the profile, I need your first name. What should I "
+                            "enter for you?' requests first_name and is NOT a workflow "
+                            "permission merely because it mentions a profile. "
+                            "'What type of appointment do you need: new patient "
+                            "consultation, follow-up, office visit, or something else?' "
+                            "requests appointment_type. "
+                            "'Are you a patient, or have you visited us before?' requests "
+                            "patient_status and visited_before. "
+                            "'Is this a routine checkup, follow-up, urgent concern, or "
+                            "specific procedure?' requests appointment_type. "
                             "stated_facts is different. Add a stated fact only "
                             "when the agent itself supplies a specific candidate "
                             "value, assumption, or summary. Do not create a "
@@ -480,11 +503,14 @@ class OllamaConversationInterpreter:
                             "If the question asks about a patient attribute rather than "
                             "permission to perform workflow, use none unless that attribute "
                             "itself changes the objective. "
-                            "Do not force unsupported patient attributes into the "
-                            "known fact ontology. For example, new-versus-returning "
-                            "patient status is not name. If an unsupported fact is "
-                            "asked, leave requested_facts empty while still classifying "
-                            "the response expectation and topic. "
+                            "Do not force genuinely unsupported patient attributes "
+                            "into the closest known fact. However, first_name, last_name, "
+                            "patient_status, visited_before, and appointment_type ARE "
+                            "supported facts and must populate requested_facts when asked. "
+                            "If some other unsupported fact is asked, leave requested_facts "
+                            "empty while still classifying response expectation and topic. "
+                            "Target memory is prior behavioral context only. Never treat "
+                            "a target-memory entry as words spoken in the current turn. "
                             "An appointment yes/no question must still populate "
                             "appointment_offer, and a supported patient-fact question "
                             "must still populate requested_facts. Those specific "

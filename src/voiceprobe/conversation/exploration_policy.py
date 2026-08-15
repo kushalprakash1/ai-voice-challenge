@@ -24,6 +24,7 @@ from voiceprobe.conversation.meaning import (
 from voiceprobe.conversation.objective import AppointmentProgress
 from voiceprobe.conversation.state import FactKey
 from voiceprobe.scenarios.models import PatientScenario
+from voiceprobe.target_memory import should_tolerate_target_conflict
 
 
 def _objective_facts(
@@ -46,6 +47,7 @@ def apply_exploration_policy(
     scenario: PatientScenario,
     grounded: GroundedTurnMeaning,
     progress: AppointmentProgress,
+    agent_turn: str,
     base_decision: CommunicationDecision,
 ) -> CommunicationDecision:
     """Cooperate with benign workflows while preserving scenario truth.
@@ -68,9 +70,43 @@ def apply_exploration_policy(
     if progress.objective_complete:
         return base_decision
 
-    # Preserve corrections, known fact disclosure, and repetition behavior.
-    # This is important because exploration may cooperate with a side workflow,
-    # but it still may only communicate facts present in the scenario.
+    # Active recall: a previously observed target behavior may deliberately
+    # conflict with caller truth during a demo workflow. Exploration can tolerate
+    # that behavior without ever allowing it to overwrite scenario truth.
+    if (
+        grounded.conflicts
+        and should_tolerate_target_conflict(agent_turn)
+    ):
+        # If the same turn also asks an actionable caller question, answer that
+        # question instead of wasting the turn correcting known demo behavior.
+        if meaning.requested_facts:
+            return CommunicationDecision(
+                kind=CommunicationKind.ANSWER,
+                facts_to_communicate=meaning.requested_facts,
+            )
+
+        if meaning.topic == "call purpose":
+            return CommunicationDecision(
+                kind=CommunicationKind.ANSWER,
+                facts_to_communicate=_objective_facts(scenario),
+                state_objective=True,
+            )
+
+        if (
+            meaning.question_kind is QuestionKind.WORKFLOW_PERMISSION
+            and meaning.workflow_direction is not WorkflowDirection.STOP
+        ):
+            return CommunicationDecision(
+                kind=CommunicationKind.AGREE,
+            )
+
+        # A standalone known demo assertion requires no argument from the
+        # exploratory caller. Preserve truth internally and keep listening.
+        return CommunicationDecision(
+            kind=CommunicationKind.WAIT,
+        )
+
+    # Preserve genuine corrections, known fact disclosure, and repetition.
     if (
         grounded.conflicts
         or meaning.requested_facts
