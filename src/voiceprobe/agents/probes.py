@@ -37,6 +37,7 @@ def apply_probe_policy(
     probe_progress: ProbeProgress,
     prior_agent_turn_count: int,
     base_decision: CommunicationDecision,
+    booking_confirmed_this_turn: bool = False,
 ) -> tuple[CommunicationDecision, ProbeProgress]:
     """Overlay a narrowly scoped patient-driven experiment on a normal decision."""
     enabled = set(scenario.probes)
@@ -64,6 +65,7 @@ def apply_probe_policy(
         and not probe_progress.has_fired(booking_probe)
         and appointment.offer_accepted
         and not appointment.booking_confirmed
+        and not booking_confirmed_this_turn
         and base_decision.kind
         in {
             CommunicationKind.END_CONVERSATION,

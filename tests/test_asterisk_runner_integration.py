@@ -270,8 +270,8 @@ def test_persistent_runner_records_real_asterisk_adapter_evidence(
         ("ami_connect", 1),
         ("ami_login", 1),
         ("ami_originate", 1),
-        ("ami_close", 1),
         ("media_complete", 1),
+        ("ami_close", 1),
     ]
 
     # Prove the evidence survives process restart instead of existing only

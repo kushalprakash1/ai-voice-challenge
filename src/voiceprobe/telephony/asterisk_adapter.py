@@ -44,8 +44,11 @@ from voiceprobe.runner import (
 from voiceprobe.safety import validate_destination
 from voiceprobe.scenarios.catalog import get_scenario
 from voiceprobe.telephony.ami import (
+    AMIClientError,
+    AMIConnectionStateError,
     AsteriskAMIClient,
     AsteriskAMIConfig,
+    AsteriskHangupResult,
     OriginateResult,
 )
 from voiceprobe.verbalizers.ollama import OllamaNaturalVerbalizer
@@ -62,6 +65,7 @@ class AsteriskMediaOutcome:
     artifact_run_id: str
     duration_seconds: float
     originate: OriginateResult
+    hangup: AsteriskHangupResult | None = None
 
 
 class _AMIClient(Protocol):
@@ -89,6 +93,16 @@ class _AMIClient(Protocol):
         """Originate exactly one AudioSocket call."""
         ...
 
+    def wait_for_hangup(
+        self,
+        *,
+        unique_id: str,
+        channel: str,
+        max_events: int = 2000,
+    ) -> AsteriskHangupResult:
+        """Wait for the correlated Hangup event."""
+        ...
+
     def close(self) -> None:
         """Close the AMI transport."""
         ...
@@ -109,6 +123,80 @@ class _MediaExecutor(Protocol):
 
 _AMIClientFactory = Callable[[AsteriskAMIConfig], _AMIClient]
 _CallIDFactory = Callable[[], UUID]
+
+
+class _MonitoredOriginate:
+    """One-shot originate callback retaining AMI for Hangup observation."""
+
+    def __init__(
+        self,
+        *,
+        ami_config: AsteriskAMIConfig,
+        ami_client_factory: _AMIClientFactory,
+        destination: str,
+        call_id: UUID,
+    ) -> None:
+        self._ami_config = ami_config
+        self._ami_client_factory = ami_client_factory
+        self._destination = destination
+        self._call_id = call_id
+        self._client: _AMIClient | None = None
+        self._result: OriginateResult | None = None
+        self._invoked = False
+
+    def __call__(self) -> OriginateResult:
+        """Originate once while retaining the authenticated AMI connection."""
+        if self._invoked:
+            raise CallExecutionError(
+                "Assessment originate callback may be invoked only once."
+            )
+
+        self._invoked = True
+
+        client = self._ami_client_factory(self._ami_config)
+        self._client = client
+
+        try:
+            client.connect()
+            client.login(events="call")
+
+            result = client.originate_audiosocket(
+                self._destination,
+                call_id=self._call_id,
+                timeout_ms=DEFAULT_ORIGINATE_TIMEOUT_MS,
+            )
+        except Exception:
+            self.close()
+            raise
+
+        self._result = result
+
+        return result
+
+    def wait_for_hangup(
+        self,
+    ) -> AsteriskHangupResult:
+        """Read the Hangup event for the originated Local channel."""
+        client = self._client
+        result = self._result
+
+        if client is None or result is None:
+            raise AMIConnectionStateError(
+                "Cannot observe Hangup before a successful originate."
+            )
+
+        return client.wait_for_hangup(
+            unique_id=result.asterisk_unique_id,
+            channel=result.channel,
+        )
+
+    def close(self) -> None:
+        """Close retained AMI without requesting a channel hangup."""
+        client = self._client
+        self._client = None
+
+        if client is not None:
+            client.close()
 
 
 def _default_ami_client_factory(
@@ -230,28 +318,24 @@ class AsteriskAssessmentCallAdapter:
         if not isinstance(call_id, UUID):
             raise TypeError("Asterisk adapter call_id_factory must return UUID.")
 
-        def originate() -> OriginateResult:
-            client = self._ami_client_factory(self._ami_config)
-
-            try:
-                client.connect()
-                client.login(events="call")
-
-                return client.originate_audiosocket(
-                    request.destination,
-                    call_id=call_id,
-                    timeout_ms=DEFAULT_ORIGINATE_TIMEOUT_MS,
-                )
-            finally:
-                # Closing the restricted localhost AMI transport does not
-                # terminate an already-originated Asterisk channel.
-                client.close()
-
-        outcome = self._media_executor(
-            request,
-            call_id,
-            originate,
+        originate = _MonitoredOriginate(
+            ami_config=self._ami_config,
+            ami_client_factory=self._ami_client_factory,
+            destination=request.destination,
+            call_id=call_id,
         )
+
+        try:
+            outcome = self._media_executor(
+                request,
+                call_id,
+                originate,
+            )
+        finally:
+            # Retain AMI throughout media execution so the correlated Hangup
+            # event remains observable. Closing AMI itself does not request
+            # a call hangup.
+            originate.close()
 
         if outcome.call_id != call_id:
             raise CallExecutionError(
@@ -411,6 +495,41 @@ class AsteriskAssessmentCallAdapter:
                             "AudioSocket UUID did not match the originated call."
                         )
 
+                    hangup_result: AsteriskHangupResult | None = None
+
+                    if isinstance(
+                        originate,
+                        _MonitoredOriginate,
+                    ):
+                        try:
+                            hangup_result = originate.wait_for_hangup()
+                        except AMIClientError as error:
+                            recorder.record_event(
+                                "asterisk_hangup_observer_error",
+                                asterisk_unique_id=(
+                                    originate_result.asterisk_unique_id
+                                ),
+                                channel=(originate_result.channel),
+                                error_type=(type(error).__name__),
+                                error_message=str(error),
+                            )
+                        else:
+                            recorder.record_event(
+                                "asterisk_hangup_observed",
+                                asterisk_unique_id=(hangup_result.unique_id),
+                                channel=hangup_result.channel,
+                                linked_id=(hangup_result.linked_id),
+                                cause=hangup_result.cause,
+                                cause_text=(hangup_result.cause_text),
+                                tech_cause=(hangup_result.tech_cause),
+                            )
+                    else:
+                        recorder.record_event(
+                            "asterisk_hangup_observer_unavailable",
+                            asterisk_unique_id=(originate_result.asterisk_unique_id),
+                            channel=originate_result.channel,
+                        )
+
                     duration_seconds = recorder.elapsed_seconds
 
                     recorder.finalize(
@@ -423,6 +542,7 @@ class AsteriskAssessmentCallAdapter:
                         artifact_run_id=recorder.run_id,
                         duration_seconds=duration_seconds,
                         originate=originate_result,
+                        hangup=hangup_result,
                     )
         finally:
             interpreter.close()

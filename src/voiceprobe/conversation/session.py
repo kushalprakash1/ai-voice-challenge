@@ -271,6 +271,7 @@ class PatientSession:
             probe_progress=pre_turn_probe_progress,
             prior_agent_turn_count=prior_agent_turn_count,
             base_decision=decision,
+            booking_confirmed_this_turn=meaning.booking_confirmed,
         )
 
         state_with_agent = record_agent_turn(
@@ -279,6 +280,32 @@ class PatientSession:
         )
 
         decision_seconds = perf_counter() - decision_started
+
+        if decision.kind is CommunicationKind.WAIT:
+            state_update_started = perf_counter()
+
+            # A non-actionable agent turn still belongs in conversation
+            # history, but the simulated patient intentionally says nothing.
+            # Appointment, probe, and pending-offer state remain unchanged.
+            self._state = state_with_agent
+            self._progress = pre_turn_progress
+            self._probe_progress = next_probe_progress
+
+            return SessionTurnResult(
+                agent_turn=agent_turn,
+                meaning=meaning,
+                grounded=grounded,
+                decision=decision,
+                patient_text="",
+                state=state_with_agent,
+                progress=pre_turn_progress,
+                timings=SessionTurnTimings(
+                    interpreter_seconds=interpreter_seconds,
+                    decision_seconds=decision_seconds,
+                    verbalizer_seconds=0.0,
+                    state_update_seconds=(perf_counter() - state_update_started),
+                ),
+            )
 
         verbalizer_started = perf_counter()
 
@@ -402,6 +429,12 @@ class PatientSession:
             and not offer_matches_recorded
         )
 
+        confirmed_accepted_offer = (
+            meaning.booking_confirmed
+            and next_progress.offer_accepted
+            and (offer is None or offer_matches_recorded)
+        )
+
         if (
             offer is not None
             and not offer_matches_recorded
@@ -430,10 +463,7 @@ class PatientSession:
                 next_progress,
             )
 
-        if (
-            meaning.booking_confirmed
-            and decision.kind is CommunicationKind.ACKNOWLEDGE_COMPLETE
-        ):
+        if confirmed_accepted_offer:
             next_progress = record_booking_confirmed(
                 next_progress,
             )
@@ -520,6 +550,16 @@ class PatientSession:
                     "the deterministic appointment objective completed."
                 )
 
+            return PatientAction(
+                kind=ActionKind.COMPLETE,
+                response=patient_text,
+                facts_used=decision.facts_to_communicate,
+            )
+
+        if (
+            decision.kind is CommunicationKind.END_CONVERSATION
+            and progress.objective_complete
+        ):
             return PatientAction(
                 kind=ActionKind.COMPLETE,
                 response=patient_text,

@@ -21,7 +21,10 @@ from voiceprobe.execution import (
     write_execution_manifest,
 )
 from voiceprobe.execution_state import (
+    HARD_BUDGET_CEILING_USD,
+    BudgetLedger,
     BudgetPolicy,
+    BudgetStateError,
     PersistentBudgetLedger,
     PersistentCallLedger,
 )
@@ -32,6 +35,102 @@ from voiceprobe.telephony.ami import AsteriskAMIConfig
 from voiceprobe.telephony.asterisk_adapter import AsteriskAssessmentCallAdapter
 
 DEFAULT_AMI_ENV = Path.home() / ".config/voiceprobe/ami.env"
+DEFAULT_MAX_PROVIDER_RATE_PER_MINUTE_USD = Decimal("0.10")
+
+
+def _decimal_from_budget_value(
+    value: object,
+    *,
+    name: str,
+    path: Path,
+) -> Decimal:
+    """Parse one persisted monetary value without silently ignoring damage."""
+    if not isinstance(value, str):
+        raise BudgetStateError(f"{path}: {name} must be stored as a decimal string.")
+
+    try:
+        amount = Decimal(value)
+    except Exception as error:
+        raise BudgetStateError(f"{path}: {name} is not a valid decimal.") from error
+
+    if not amount.is_finite() or amount < 0:
+        raise BudgetStateError(f"{path}: {name} must be a finite non-negative amount.")
+
+    return amount
+
+
+def cumulative_assessment_commitment(
+    executions_root: Path,
+) -> Decimal:
+    """Sum every persisted assessment reservation/actual cost across runs.
+
+    Actual provider cost replaces the conservative reservation when known.
+    A malformed historical ledger is treated as a safety failure rather than
+    being ignored.
+    """
+    total = Decimal(0)
+
+    if not executions_root.exists():
+        return total
+
+    for budget_path in sorted(executions_root.glob("*/budget.json")):
+        try:
+            payload = json.loads(budget_path.read_text(encoding="utf-8"))
+        except Exception as error:
+            raise BudgetStateError(
+                f"Unable to read historical budget ledger: {budget_path}"
+            ) from error
+
+        if not isinstance(payload, dict):
+            raise BudgetStateError(
+                f"{budget_path}: budget ledger must contain an object."
+            )
+
+        entries = payload.get("entries")
+
+        if not isinstance(entries, list):
+            raise BudgetStateError(
+                f"{budget_path}: budget entries must contain a list."
+            )
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise BudgetStateError(
+                    f"{budget_path}: budget entry must contain an object."
+                )
+
+            actual = entry.get("actual_usd")
+
+            if actual is not None:
+                total += _decimal_from_budget_value(
+                    actual,
+                    name="actual_usd",
+                    path=budget_path,
+                )
+                continue
+
+            total += _decimal_from_budget_value(
+                entry.get("reserved_usd"),
+                name="reserved_usd",
+                path=budget_path,
+            )
+
+    return total
+
+
+def enforce_cumulative_budget(
+    *,
+    prior_commitment_usd: Decimal,
+    next_call_reservation_usd: Decimal,
+) -> None:
+    """Block a call whose worst-case reservation could cross the hard cap."""
+    projected = prior_commitment_usd + next_call_reservation_usd
+
+    if projected >= HARD_BUDGET_CEILING_USD:
+        raise BudgetStateError(
+            "Starting this assessment call could reach or exceed the "
+            "$20 cumulative challenge budget ceiling."
+        )
 
 
 def _required_env_value(
@@ -127,8 +226,14 @@ def main() -> None:
 
     parser.add_argument(
         "--max-rate-per-minute-usd",
-        default="1.00",
-        help="Conservative provider-rate assumption for reservation.",
+        default=format(
+            DEFAULT_MAX_PROVIDER_RATE_PER_MINUTE_USD,
+            "f",
+        ),
+        help=(
+            "Conservative provider-rate ceiling used for reservation; "
+            "default is $0.10/min."
+        ),
     )
 
     args = parser.parse_args()
@@ -153,6 +258,20 @@ def main() -> None:
     budget_policy = BudgetPolicy(
         total_budget_usd=Decimal(args.budget_usd),
         max_provider_rate_per_minute_usd=Decimal(args.max_rate_per_minute_usd),
+    )
+
+    # Each run_one execution owns its own atomic ledger, but the challenge
+    # budget applies across every real assessment call. Scan historical
+    # execution ledgers before allowing the next reservation.
+    prior_commitment_usd = cumulative_assessment_commitment(execution_dir.parent)
+
+    next_reservation = BudgetLedger(budget_policy).worst_case_call_cost(
+        manifest.max_call_duration_seconds
+    )
+
+    enforce_cumulative_budget(
+        prior_commitment_usd=prior_commitment_usd,
+        next_call_reservation_usd=next_reservation,
     )
 
     call_ledger = PersistentCallLedger.initialize(
@@ -191,6 +310,8 @@ def main() -> None:
                 "call_count": manifest.call_count,
                 "scenario_id": args.scenario,
                 "destination": manifest.destination,
+                "prior_cumulative_commitment_usd": (prior_commitment_usd),
+                "next_call_reserved_usd": (next_reservation),
                 "entries": [asdict(entry) for entry in result.entries],
             },
             indent=2,

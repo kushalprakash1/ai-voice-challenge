@@ -189,3 +189,74 @@ def test_offer_language_does_not_fake_booking_confirmation() -> None:
     )
 
     assert not normalized.booking_confirmed
+
+
+def test_recovers_single_duration_candidate_from_confirmation_question() -> None:
+    normalized = normalize_turn_meaning(
+        TurnMeaning(
+            requested_facts=("duration",),
+        ),
+        agent_turn="And this has been happening for about three weeks?",
+    )
+
+    assert normalized.stated_facts == (
+        FactAssertion(
+            fact="duration",
+            value="three weeks",
+        ),
+    )
+
+
+def test_does_not_guess_between_multiple_duration_candidates() -> None:
+    normalized = normalize_turn_meaning(
+        TurnMeaning(
+            requested_facts=("duration",),
+        ),
+        agent_turn="Was it three weeks or four weeks?",
+    )
+
+    assert normalized.stated_facts == ()
+
+
+def test_recovers_slot_from_explicit_all_set_confirmation() -> None:
+    normalized = normalize_turn_meaning(
+        TurnMeaning(),
+        agent_turn="You're all set for Tuesday at 9 AM.",
+    )
+
+    assert normalized.booking_confirmed
+    assert normalized.appointment_offer == AppointmentOffer(
+        day="Tuesday",
+        time="9 AM",
+    )
+
+
+def test_recovers_slot_from_explicit_booked_confirmation() -> None:
+    normalized = normalize_turn_meaning(
+        TurnMeaning(),
+        agent_turn="Great, you're booked for Friday at 2:30 PM.",
+    )
+
+    assert normalized.booking_confirmed
+    assert normalized.appointment_offer == AppointmentOffer(
+        day="Friday",
+        time="2:30 PM",
+    )
+
+
+def test_recovers_explicit_terminal_goodbye() -> None:
+    normalized = normalize_turn_meaning(
+        TurnMeaning(),
+        agent_turn="Okay, you're all set. Have a good day, goodbye.",
+    )
+
+    assert normalized.conversation_end_requested
+
+
+def test_does_not_treat_nonterminal_goodbye_reference_as_call_end() -> None:
+    normalized = normalize_turn_meaning(
+        TurnMeaning(),
+        agent_turn="Please don't say goodbye yet.",
+    )
+
+    assert not normalized.conversation_end_requested

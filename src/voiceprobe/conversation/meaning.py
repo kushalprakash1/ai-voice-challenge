@@ -7,6 +7,7 @@ Python code.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Self
 
 from pydantic import (
@@ -18,6 +19,44 @@ from pydantic import (
 )
 
 from voiceprobe.conversation.state import FactKey
+
+
+class ResponseExpectation(StrEnum):
+    """General form of response the tested agent is soliciting."""
+
+    NONE = "none"
+    YES_NO = "yes_no"
+    FACT = "fact"
+    CHOICE = "choice"
+    ACKNOWLEDGEMENT = "acknowledgement"
+    FREEFORM = "freeform"
+
+
+class WorkflowRelation(StrEnum):
+    """How agreeing with a workflow request relates to the call objective."""
+
+    NONE = "none"
+    ADVANCES_OBJECTIVE = "advances_objective"
+    OPPOSES_OBJECTIVE = "opposes_objective"
+    UNCERTAIN = "uncertain"
+
+
+class QuestionKind(StrEnum):
+    """What sort of response-triggering question or request the agent made."""
+
+    NONE = "none"
+    WORKFLOW_PERMISSION = "workflow_permission"
+    PATIENT_ATTRIBUTE = "patient_attribute"
+    OTHER = "other"
+
+
+class WorkflowDirection(StrEnum):
+    """Direction of an agent workflow action, independent of patient facts."""
+
+    NONE = "none"
+    CONTINUE = "continue"
+    STOP = "stop"
+    UNKNOWN = "unknown"
 
 
 class FactAssertion(BaseModel):
@@ -89,6 +128,48 @@ class TurnMeaning(BaseModel):
         extra="forbid",
     )
 
+    response_expectation: ResponseExpectation = Field(
+        default=ResponseExpectation.NONE,
+        description=(
+            "General form of reply the tested voice agent is currently "
+            "soliciting. This supplements, rather than replaces, the "
+            "structured patient-fact and scheduling fields."
+        ),
+    )
+    workflow_relation: WorkflowRelation = Field(
+        default=WorkflowRelation.NONE,
+        description=(
+            "Whether agreeing with a workflow request would advance or oppose "
+            "the supplied conversation objective. This is not itself the "
+            "patient's answer."
+        ),
+    )
+    question_kind: QuestionKind = Field(
+        default=QuestionKind.NONE,
+        description=(
+            "General category of the current question. workflow_permission "
+            "means the agent asks whether it may perform, continue, or stop "
+            "a workflow action. patient_attribute means the agent asks whether "
+            "the patient has or is something, including attributes outside the "
+            "known patient-fact ontology."
+        ),
+    )
+    workflow_direction: WorkflowDirection = Field(
+        default=WorkflowDirection.NONE,
+        description=(
+            "For workflow_permission questions, whether the requested agent "
+            "action continues/proceeds with the workflow or stops/cancels it. "
+            "Use none for non-workflow questions."
+        ),
+    )
+    topic: str | None = Field(
+        default=None,
+        description=(
+            "Short neutral description of what the tested agent's current "
+            "question or request is about. Do not infer patient facts."
+        ),
+    )
+
     requested_facts: tuple[FactKey, ...] = Field(
         default=(),
         description=(
@@ -151,6 +232,27 @@ class TurnMeaning(BaseModel):
             "be interpreted reliably."
         ),
     )
+
+    @field_validator("topic")
+    @classmethod
+    def normalize_topic(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+
+        normalized = " ".join(value.split())
+
+        if not normalized:
+            return None
+
+        if normalized.casefold() in {
+            "none",
+            "null",
+            "n/a",
+            "not applicable",
+        }:
+            return None
+
+        return normalized
 
     @field_validator("appointment_offer", mode="before")
     @classmethod

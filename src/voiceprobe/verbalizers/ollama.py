@@ -271,6 +271,22 @@ class OllamaNaturalVerbalizer:
                 "'test', or 'verify'. Do not invent any scheduling detail."
             )
 
+        if decision.kind is CommunicationKind.AGREE:
+            return (
+                "Briefly agree to the caller's workflow request or permission "
+                "question. Prefer a natural response such as 'Yes, please.' "
+                "Use about 2 to 5 spoken words. Do not add patient facts, "
+                "appointment details, explanations, or another question."
+            )
+
+        if decision.kind is CommunicationKind.DECLINE_WORKFLOW:
+            return (
+                "Briefly decline the caller's workflow request because it would "
+                "oppose the current scheduling objective. Prefer a short response "
+                "such as 'No, I'd like to continue.' Do not add patient facts or "
+                "invent scheduling details."
+            )
+
         if decision.kind is CommunicationKind.CLARIFY:
             return (
                 "Ask for clarification very briefly, preferably in one "

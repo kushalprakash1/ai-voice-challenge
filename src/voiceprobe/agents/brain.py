@@ -11,6 +11,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from voiceprobe.conversation.grounding import GroundedTurnMeaning
+from voiceprobe.conversation.meaning import (
+    QuestionKind,
+    ResponseExpectation,
+    TurnMeaning,
+    WorkflowDirection,
+)
 from voiceprobe.conversation.objective import AppointmentProgress
 from voiceprobe.conversation.scheduling import time_matches_preference
 from voiceprobe.conversation.state import FactKey
@@ -30,6 +36,9 @@ class CommunicationKind(StrEnum):
     END_CONVERSATION = "end_conversation"
     ASK_AGENT_TO_REPEAT = "ask_agent_to_repeat"
     VERIFY_BOOKING = "verify_booking"
+    AGREE = "agree"
+    DECLINE_WORKFLOW = "decline_workflow"
+    WAIT = "wait"
     CLARIFY = "clarify"
 
 
@@ -71,11 +80,6 @@ class PatientBrain:
                 kind=CommunicationKind.REPEAT,
             )
 
-        if meaning.conversation_end_requested:
-            return CommunicationDecision(
-                kind=CommunicationKind.END_CONVERSATION,
-            )
-
         if meaning.booking_confirmed:
             confirmation_offer = meaning.appointment_offer
 
@@ -91,7 +95,11 @@ class PatientBrain:
 
             if progress.offer_accepted and confirmation_matches:
                 return CommunicationDecision(
-                    kind=CommunicationKind.ACKNOWLEDGE_COMPLETE,
+                    kind=(
+                        CommunicationKind.END_CONVERSATION
+                        if meaning.conversation_end_requested
+                        else CommunicationKind.ACKNOWLEDGE_COMPLETE
+                    ),
                 )
 
             # If the patient already accepted a concrete slot and the
@@ -108,6 +116,11 @@ class PatientBrain:
 
             return CommunicationDecision(
                 kind=CommunicationKind.CLARIFY,
+            )
+
+        if meaning.conversation_end_requested:
+            return CommunicationDecision(
+                kind=CommunicationKind.END_CONVERSATION,
             )
 
         if meaning.appointment_offer is not None:
@@ -153,8 +166,55 @@ class PatientBrain:
                 kind=CommunicationKind.CLARIFY,
             )
 
+        if self._should_wait(meaning):
+            return CommunicationDecision(
+                kind=CommunicationKind.WAIT,
+            )
+
+        if meaning.response_expectation is ResponseExpectation.YES_NO:
+            if meaning.question_kind is QuestionKind.WORKFLOW_PERMISSION:
+                if meaning.workflow_direction is WorkflowDirection.CONTINUE:
+                    return CommunicationDecision(
+                        kind=CommunicationKind.AGREE,
+                    )
+
+                if meaning.workflow_direction is WorkflowDirection.STOP:
+                    return CommunicationDecision(
+                        kind=CommunicationKind.DECLINE_WORKFLOW,
+                    )
+
+            # A yes/no question about an unsupported patient attribute must
+            # never become an automatic yes merely because answering it might
+            # help the external agent's workflow.
+            return CommunicationDecision(
+                kind=CommunicationKind.CLARIFY,
+            )
+
         return CommunicationDecision(
             kind=CommunicationKind.CLARIFY,
+        )
+
+    @staticmethod
+    def _should_wait(meaning: TurnMeaning) -> bool:
+        """Return whether the agent turn requires no patient response.
+
+        WAIT is deliberately conservative. It is used only when semantic
+        interpretation found no question, patient fact, scheduling offer,
+        booking action, repetition request, ending, ambiguity, or substantive
+        topic.
+        """
+        return bool(
+            not meaning.unclear
+            and meaning.response_expectation is ResponseExpectation.NONE
+            and meaning.question_kind is QuestionKind.NONE
+            and meaning.workflow_direction is WorkflowDirection.NONE
+            and meaning.topic is None
+            and not meaning.requested_facts
+            and not meaning.stated_facts
+            and meaning.appointment_offer is None
+            and not meaning.booking_confirmed
+            and not meaning.conversation_end_requested
+            and not meaning.requests_repetition
         )
 
     @staticmethod

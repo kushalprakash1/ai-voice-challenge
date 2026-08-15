@@ -170,8 +170,8 @@ def test_successful_call_maps_asterisk_and_artifact_evidence() -> None:
         "ami_connect",
         "ami_login:call",
         "ami_originate",
-        "ami_close",
         "media_complete",
+        "ami_close",
     ]
 
 

@@ -64,6 +64,18 @@ class OriginateResult:
     reason: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class AsteriskHangupResult:
+    """Correlated Asterisk Hangup evidence for one originated channel."""
+
+    unique_id: str
+    channel: str
+    linked_id: str | None
+    cause: int | None
+    cause_text: str | None
+    tech_cause: int | None
+
+
 class _SocketLike(Protocol):
     def recv(
         self,
@@ -220,6 +232,64 @@ def parse_ami_message(
         raise AMIProtocolError("AMI message contains no headers.")
 
     return AMIMessage(headers=tuple(headers))
+
+
+def _parse_optional_integer_header(
+    message: AMIMessage,
+    name: str,
+) -> int | None:
+    """Parse one optional numeric AMI header without guessing."""
+    raw_value = message.get(name)
+
+    if raw_value is None or not raw_value.strip():
+        return None
+
+    try:
+        return int(raw_value)
+    except ValueError as error:
+        raise AMIProtocolError(f"AMI {name} header must contain an integer.") from error
+
+
+def _hangup_result_from_message(
+    message: AMIMessage,
+) -> AsteriskHangupResult:
+    """Convert one validated Hangup event into typed evidence."""
+    if message.event != "Hangup":
+        raise AMIProtocolError("Expected an AMI Hangup event.")
+
+    unique_id = message.get("Uniqueid")
+    channel = message.get("Channel")
+
+    if unique_id is None or not unique_id.strip():
+        raise AMIProtocolError("AMI Hangup event is missing Uniqueid.")
+
+    if channel is None or not channel.strip():
+        raise AMIProtocolError("AMI Hangup event is missing Channel.")
+
+    linked_id = message.get("Linkedid")
+
+    if linked_id is not None:
+        linked_id = linked_id.strip() or None
+
+    cause_text = message.get("Cause-txt")
+
+    if cause_text is not None:
+        cause_text = cause_text.strip() or None
+
+    return AsteriskHangupResult(
+        unique_id=unique_id.strip(),
+        channel=channel.strip(),
+        linked_id=linked_id,
+        cause=_parse_optional_integer_header(
+            message,
+            "Cause",
+        ),
+        cause_text=cause_text,
+        tech_cause=_parse_optional_integer_header(
+            message,
+            "TechCause",
+        ),
+    )
 
 
 def _validate_header_value(
@@ -550,6 +620,55 @@ class AsteriskAMIClient:
             response=originate_response,
             reason=event.get("Reason"),
         )
+
+    def wait_for_hangup(
+        self,
+        *,
+        unique_id: str,
+        channel: str,
+        max_events: int = 2000,
+    ) -> AsteriskHangupResult:
+        """Wait for the Hangup event belonging to one originated channel."""
+        self._require_authenticated()
+
+        if self._event_mask != "call":
+            raise AMIConnectionStateError(
+                "Hangup observation requires login(events='call')."
+            )
+
+        _validate_header_value(
+            unique_id,
+            name="Asterisk Uniqueid",
+        )
+        _validate_header_value(
+            channel,
+            name="Asterisk channel",
+        )
+
+        if (
+            isinstance(max_events, bool)
+            or not isinstance(max_events, int)
+            or not 1 <= max_events <= 10_000
+        ):
+            raise ValueError("AMI Hangup max_events must be between 1 and 10000.")
+
+        stream = self._require_stream()
+
+        for _ in range(max_events):
+            message = stream.read_message()
+
+            if message.event != "Hangup":
+                continue
+
+            event_unique_id = message.get("Uniqueid")
+            event_channel = message.get("Channel")
+
+            if event_unique_id != unique_id and event_channel != channel:
+                continue
+
+            return _hangup_result_from_message(message)
+
+        raise AMIProtocolError("AMI Hangup event correlation limit exceeded.")
 
     def logoff(self) -> None:
         """Log off when authenticated, then close the socket."""

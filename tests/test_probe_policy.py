@@ -133,3 +133,30 @@ def test_catalog_has_only_two_intended_active_probes() -> None:
     assert get_scenario("booking-confirmation-robustness").probes == (
         ProbeKind.VERIFY_BOOKING_BEFORE_END,
     )
+
+
+def test_booking_probe_skips_confirmation_already_given_this_turn() -> None:
+    scenario = get_scenario("booking-confirmation-robustness")
+
+    appointment = AppointmentProgress(
+        offered_day="Friday",
+        offered_time="2:30 PM",
+        offer_accepted=True,
+        booking_confirmed=False,
+    )
+
+    base = CommunicationDecision(
+        kind=CommunicationKind.END_CONVERSATION,
+    )
+
+    decision, progress = apply_probe_policy(
+        scenario=scenario,
+        appointment=appointment,
+        probe_progress=ProbeProgress(),
+        prior_agent_turn_count=4,
+        base_decision=base,
+        booking_confirmed_this_turn=True,
+    )
+
+    assert decision == base
+    assert not progress.fired

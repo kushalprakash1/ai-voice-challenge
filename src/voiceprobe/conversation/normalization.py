@@ -238,6 +238,160 @@ _BOOKING_CONFIRMATION_PATTERNS = (
 )
 
 
+# These recoveries cover closed-form, high-confidence information that is safer
+# to parse deterministically than to lose when the semantic model omits a field.
+# They do not decide what the patient should say.
+
+_DURATION_VALUE_PATTERN = re.compile(
+    r"\b(?:about|around|roughly|approximately|almost|nearly)?\s*"
+    r"(?P<value>"
+    r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|"
+    r"eighteen|nineteen|twenty)"
+    r"\s+(?:hours?|days?|weeks?|months?|years?)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_BOOKING_DAY_PATTERN = re.compile(
+    r"\b(?P<day>"
+    r"Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_BOOKING_TIME_PATTERN = re.compile(
+    r"\b(?P<clock>(?:0?[1-9]|1[0-2])(?:(?::|\.)[0-5]\d)?)\s*"
+    r"(?P<ampm>a\.?\s*m\.?|p\.?\s*m\.?)"
+    r"(?=\s|[,.!?]|$)",
+    re.IGNORECASE,
+)
+
+_EXPLICIT_CONVERSATION_END_PATTERN = re.compile(
+    r"\b(?:goodbye|good\s+bye|bye)"
+    r"(?:\s+for\s+now)?[.!?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _recover_explicit_duration_candidate(
+    meaning: TurnMeaning,
+    *,
+    agent_turn: str | None,
+) -> TurnMeaning:
+    """Recover one unambiguous duration value from a duration confirmation."""
+    if agent_turn is None:
+        return meaning
+
+    if "duration" not in meaning.requested_facts:
+        return meaning
+
+    if _first_asserted_value(meaning, "duration") is not None:
+        return meaning
+
+    matches = {
+        match.group("value").casefold()
+        for match in _DURATION_VALUE_PATTERN.finditer(agent_turn)
+    }
+
+    # Do not guess when the agent supplied multiple possible durations.
+    if len(matches) != 1:
+        return meaning
+
+    value = next(iter(matches))
+
+    return meaning.model_copy(
+        update={
+            "stated_facts": (
+                *meaning.stated_facts,
+                FactAssertion(
+                    fact="duration",
+                    value=value,
+                ),
+            )
+        }
+    )
+
+
+def _normalize_clock_match(match: re.Match[str]) -> str:
+    """Canonicalize a captured telephone clock time."""
+    clock = match.group("clock").replace(".", ":")
+    ampm = match.group("ampm").casefold()
+
+    suffix = "AM" if ampm.startswith("a") else "PM"
+
+    return f"{clock} {suffix}"
+
+
+def _recover_explicit_booking_slot(
+    meaning: TurnMeaning,
+    *,
+    agent_turn: str | None,
+) -> TurnMeaning:
+    """Recover an unambiguous slot stated inside an explicit booking confirmation."""
+    if not meaning.booking_confirmed:
+        return meaning
+
+    if meaning.appointment_offer is not None:
+        return meaning
+
+    if agent_turn is None:
+        return meaning
+
+    day_values = {
+        match.group("day").capitalize()
+        for match in _BOOKING_DAY_PATTERN.finditer(agent_turn)
+    }
+
+    time_values = {
+        _normalize_clock_match(match)
+        for match in _BOOKING_TIME_PATTERN.finditer(agent_turn)
+    }
+
+    # Multiple days or times are ambiguous; leave them to semantic reasoning.
+    if len(day_values) > 1 or len(time_values) > 1:
+        return meaning
+
+    day = next(iter(day_values)) if day_values else None
+    time = next(iter(time_values)) if time_values else None
+
+    if day is None and time is None:
+        return meaning
+
+    return meaning.model_copy(
+        update={
+            "appointment_offer": AppointmentOffer(
+                day=day,
+                time=time,
+            )
+        }
+    )
+
+
+def _recover_explicit_conversation_end(
+    meaning: TurnMeaning,
+    *,
+    agent_turn: str | None,
+) -> TurnMeaning:
+    """Recover only an unmistakable terminal bye/goodbye cue."""
+    if meaning.conversation_end_requested:
+        return meaning
+
+    if agent_turn is None:
+        return meaning
+
+    normalized_turn = " ".join(agent_turn.split())
+
+    if _EXPLICIT_CONVERSATION_END_PATTERN.search(normalized_turn) is None:
+        return meaning
+
+    return meaning.model_copy(
+        update={
+            "conversation_end_requested": True,
+        }
+    )
+
+
 def _recover_explicit_booking_confirmation(
     meaning: TurnMeaning,
     *,
@@ -376,8 +530,20 @@ def normalize_turn_meaning(
     pending_offer: AppointmentOffer | None = None,
 ) -> TurnMeaning:
     """Canonicalize scheduling semantics before grounding."""
-    normalized = _recover_explicit_booking_confirmation(
+    normalized = _recover_explicit_conversation_end(
         meaning,
+        agent_turn=agent_turn,
+    )
+    normalized = _recover_explicit_duration_candidate(
+        normalized,
+        agent_turn=agent_turn,
+    )
+    normalized = _recover_explicit_booking_confirmation(
+        normalized,
+        agent_turn=agent_turn,
+    )
+    normalized = _recover_explicit_booking_slot(
+        normalized,
         agent_turn=agent_turn,
     )
     normalized = _promote_booking_details(normalized)

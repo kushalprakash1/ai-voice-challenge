@@ -25,6 +25,42 @@ DEFAULT_MODEL = "qwen3:1.7b"
 DEFAULT_URL = "http://127.0.0.1:11434/api/chat"
 
 
+_GENERAL_SEMANTIC_FIELDS = (
+    "response_expectation",
+    "question_kind",
+    "workflow_direction",
+    "topic",
+)
+
+
+def _semantic_output_schema() -> dict[str, object]:
+    """Build the stricter schema used only at the model boundary."""
+    schema = TurnMeaning.model_json_schema()
+
+    required = schema.setdefault("required", [])
+
+    if not isinstance(required, list):
+        raise TypeError("TurnMeaning JSON schema has invalid required metadata.")
+
+    properties = schema.get("properties")
+
+    if not isinstance(properties, dict):
+        raise TypeError("TurnMeaning JSON schema has no properties mapping.")
+
+    for field_name in _GENERAL_SEMANTIC_FIELDS:
+        if field_name not in required:
+            required.append(field_name)
+
+        field_schema = properties.get(field_name)
+
+        if isinstance(field_schema, dict):
+            # A default tells a structured-output model that it may omit
+            # classification. At the LLM boundary these fields are mandatory.
+            field_schema.pop("default", None)
+
+    return schema
+
+
 class OllamaConversationInterpreter:
     """Extract constrained conversation meaning from natural speech."""
 
@@ -259,7 +295,7 @@ class OllamaConversationInterpreter:
                     "temperature": 0,
                     "num_predict": 256,
                 },
-                "format": TurnMeaning.model_json_schema(),
+                "format": _semantic_output_schema(),
                 "messages": [
                     {
                         "role": "system",
@@ -313,6 +349,88 @@ class OllamaConversationInterpreter:
                             "requests_repetition is true when the agent wants "
                             "the patient to repeat something because it was not "
                             "heard or understood. "
+                            "response_expectation describes the general form "
+                            "of reply the agent is currently soliciting. Use "
+                            "yes_no for questions that expect yes or no, including "
+                            "permission, consent, or whether to proceed; fact when "
+                            "patient information is requested; choice when the "
+                            "patient must select among alternatives; acknowledgement "
+                            "when a simple acknowledgement is explicitly requested; "
+                            "freeform for an open-ended response; and none when the "
+                            "agent is not currently soliciting a response. "
+                            "topic is a short neutral description of the subject of "
+                            "the current question or request. Do not put inferred "
+                            "patient ground truth into topic. "
+                            "These general fields never override requested_facts, "
+                            "stated_facts, appointment_offer, booking_confirmed, "
+                            "requests_repetition, or conversation_end_requested. "
+                            "A concrete appointment slot question must still populate "
+                            "appointment_offer. "
+                            "question_kind describes what kind of question "
+                            "requires the patient's response. Use "
+                            "workflow_permission when the agent asks whether it "
+                            "may perform, start, create, prepare, verify, continue, "
+                            "proceed with, stop, cancel, or otherwise control a "
+                            "workflow action. Use patient_attribute when the agent "
+                            "asks whether the patient is or has something, especially "
+                            "when that attribute is not represented by the supported "
+                            "patient-fact ontology. Do not convert an unsupported "
+                            "patient attribute into the closest known patient fact. "
+                            "Use other when neither category fits, and none when "
+                            "there is no response-triggering question. "
+                            "workflow_direction is determined only from the literal "
+                            "direction of the agent action in the current utterance. "
+                            "Do not compare it with any larger scheduling objective, "
+                            "desired outcome, realism judgment, or whether a profile is "
+                            "temporary, demo, test, permanent, or production. "
+                            "Creating, setting up, preparing, checking, verifying, "
+                            "starting, proceeding, or continuing an ordinary workflow "
+                            "action is continue. Explicitly stopping, cancelling, "
+                            "abandoning, terminating, or reversing the workflow is stop. "
+                            "For workflow_permission, use continue when the agent is "
+                            "asking to perform or proceed with a normal workflow step "
+                            "such as setup, intake, profile creation, verification, "
+                            "continuation, or scheduling. Use stop when the requested "
+                            "action would stop, cancel, abandon, terminate, or reverse "
+                            "the workflow. Use unknown only when the direction itself "
+                            "cannot be determined. Use none for patient_attribute and "
+                            "other questions. "
+                            "Do not label a normal setup or intake step as stop merely "
+                            "because the wording describes a temporary, test, or demo "
+                            "profile. Classify the direction of the requested action "
+                            "itself. "
+                            "Every explicit question or request must classify "
+                            "response_expectation according to the reply it asks for. "
+                            "Do not use none merely because its subject is outside the "
+                            "patient-fact ontology. Focus on the latest actionable "
+                            "question or request even when it follows greetings, legal "
+                            "notices, language-selection prompts, acknowledgements, or "
+                            "other introductory speech. "
+                            "Permission and proceed-or-not questions are yes_no. "
+                            "This includes requests asking whether the agent may "
+                            "continue, create or prepare something needed for intake, "
+                            "verify information, or proceed with the scheduling flow. "
+                            "For a yes_no workflow request, classify workflow_relation "
+                            "against conversation_objective. If agreeing allows normal "
+                            "intake, identification, profile creation, verification, "
+                            "continuation, or scheduling to proceed, use "
+                            "advances_objective. If agreeing would stop, cancel, "
+                            "abandon, or reverse the scheduling process, use "
+                            "opposes_objective. If the question asks about a patient "
+                            "attribute rather than permission to perform workflow, use "
+                            "none unless that attribute itself changes the objective. "
+                            "Do not force unsupported patient attributes into the "
+                            "known fact ontology. For example, new-versus-returning "
+                            "patient status is not name. If an unsupported fact is "
+                            "asked, leave requested_facts empty while still classifying "
+                            "the response expectation and topic. "
+                            "An appointment yes/no question must still populate "
+                            "appointment_offer, and a supported patient-fact question "
+                            "must still populate requested_facts. Those specific "
+                            "structured semantics take priority downstream. "
+                            "Never infer that an understood explicit question requires "
+                            "no response solely because none of the old specialized "
+                            "fields apply. "
                             "unclear is true only when the utterance itself "
                             "cannot be reliably interpreted."
                         ),

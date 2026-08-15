@@ -90,7 +90,7 @@ class FakeSession:
             patient_text=(
                 "Okay, thank you. Bye."
                 if self.kind is CommunicationKind.END_CONVERSATION
-                else "Okay."
+                else ("" if self.kind is CommunicationKind.WAIT else "Okay.")
             ),
             decision=SimpleNamespace(
                 kind=self.kind,
@@ -287,4 +287,57 @@ def test_normal_response_does_not_terminate_call(
 
     assert stop.is_set() is False
     assert "audio_sent" in sequence
+    assert "local_hangup_requested" not in sequence
+
+
+def test_wait_skips_tts_playback_and_patient_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sequence: list[str] = []
+
+    def unexpected_synthesize(**kwargs: object) -> np.ndarray:
+        del kwargs
+        raise AssertionError("WAIT attempted to invoke TTS.")
+
+    def unexpected_terminate(connection: object) -> bool:
+        del connection
+        raise AssertionError("WAIT attempted to terminate AudioSocket.")
+
+    monkeypatch.setattr(
+        phone,
+        "synthesize",
+        unexpected_synthesize,
+    )
+    monkeypatch.setattr(
+        phone,
+        "terminate_audiosocket_connection",
+        unexpected_terminate,
+    )
+
+    turns: queue.Queue[CompletedTurn | None] = queue.Queue()
+    turns.put(make_turn())
+    turns.put(None)
+
+    busy = threading.Event()
+    busy.set()
+
+    stop = threading.Event()
+
+    phone.process_turns(
+        turns=turns,
+        connection=object(),  # type: ignore[arg-type]
+        session=FakeSession(CommunicationKind.WAIT),  # type: ignore[arg-type]
+        pipeline=object(),  # type: ignore[arg-type]
+        voice="synthetic",
+        busy=busy,
+        stop=stop,
+        recorder=FakeRecorder(sequence),  # type: ignore[arg-type]
+    )
+
+    assert stop.is_set() is False
+    assert "patient_wait" in sequence
+    assert "patient_response_generated" not in sequence
+    assert "audio_sent" not in sequence
+    assert "patient_transcript" not in sequence
+    assert "playback_started" not in sequence
     assert "local_hangup_requested" not in sequence

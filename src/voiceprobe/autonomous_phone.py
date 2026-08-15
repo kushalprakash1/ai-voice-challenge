@@ -191,6 +191,51 @@ def process_turns(
             print(f"PATIENT TEXT: {result.patient_text}")
             print(f"DECISION:     {result.decision.kind.value}")
 
+            if result.decision.kind is CommunicationKind.WAIT:
+                response_prep_seconds = max(
+                    0.0,
+                    time.monotonic() - turn.completed_at,
+                )
+                endpoint_and_queue_seconds = max(
+                    0.0,
+                    response_prep_seconds - reasoning_seconds,
+                )
+
+                recorder.record_turn_metrics(
+                    {
+                        "agent_turn": turn.text,
+                        "decision": result.decision.kind.value,
+                        "interpreter_seconds": (result.timings.interpreter_seconds),
+                        "decision_seconds": (result.timings.decision_seconds),
+                        "verbalizer_seconds": 0.0,
+                        "state_update_seconds": (result.timings.state_update_seconds),
+                        "reasoning_seconds": reasoning_seconds,
+                        "tts_seconds": 0.0,
+                        "endpoint_queue_seconds": (endpoint_and_queue_seconds),
+                        "response_prep_seconds": response_prep_seconds,
+                        "speech_seconds": 0.0,
+                        "objective_complete": (result.progress.objective_complete),
+                    }
+                )
+
+                recorder.record_event(
+                    "patient_wait",
+                    agent_turn=turn.text,
+                    decision=result.decision.kind.value,
+                    meaning=result.meaning,
+                    response_prep_seconds=response_prep_seconds,
+                    objective_complete=(result.progress.objective_complete),
+                )
+
+                print(
+                    "[WAIT] No patient response required; continuing to listen.",
+                    flush=True,
+                )
+
+                # Do not run the verbalizer, Kokoro, resampling, AudioSocket
+                # playback, patient transcript recording, or echo guard.
+                continue
+
             recorder.record_event(
                 "patient_response_generated",
                 agent_turn=turn.text,
