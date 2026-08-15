@@ -219,10 +219,13 @@ class OllamaNaturalVerbalizer:
 
         if decision.kind is CommunicationKind.ACCEPT_PARTIAL_OFFER:
             return (
-                "Confirm only the appointment detail the caller provided, then "
-                "ask for the missing day or time. Use at most 12 spoken words "
-                "total, preferably as two short clauses. Do not imply that a "
-                "complete appointment has been accepted or booked."
+                "Say that the appointment detail the caller provided works, "
+                "then ask which missing day or time the caller means. Use at most "
+                "12 spoken words total, preferably as two short clauses. Never say "
+                "'I'll take it', 'I'll take the slot', 'I'll accept it', or imply "
+                "that a complete appointment has been accepted or booked. When a "
+                "day is missing, ask what day the appointment is for, not what day "
+                "works best for the caller."
             )
 
         if decision.kind is CommunicationKind.DECLINE_OFFER:
