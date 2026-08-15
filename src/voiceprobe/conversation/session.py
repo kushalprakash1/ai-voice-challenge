@@ -23,7 +23,10 @@ from voiceprobe.conversation.grounding import (
     GroundedTurnMeaning,
     ground_turn_meaning,
 )
-from voiceprobe.conversation.meaning import TurnMeaning
+from voiceprobe.conversation.meaning import (
+    AppointmentOffer,
+    TurnMeaning,
+)
 from voiceprobe.conversation.normalization import (
     normalize_turn_meaning,
     recover_asr_booking_confirmation,
@@ -146,6 +149,11 @@ class PatientSession:
         self._state = build_initial_state(scenario)
         self._progress = AppointmentProgress()
 
+        # Narrow conversational context for elliptical scheduling replies.
+        # This is populated only after PatientBrain has determined that a
+        # partial offer is compatible with patient truth.
+        self._pending_offer: AppointmentOffer | None = None
+
     @property
     def state(self) -> PatientState:
         """Current immutable conversation state."""
@@ -218,6 +226,7 @@ class PatientSession:
         meaning = normalize_turn_meaning(
             raw_meaning,
             agent_turn=agent_turn,
+            pending_offer=self._pending_offer,
         )
 
         offer = meaning.appointment_offer
@@ -287,11 +296,18 @@ class PatientSession:
             action,
         )
 
+        next_pending_offer = self._next_pending_offer(
+            current=self._pending_offer,
+            meaning=meaning,
+            decision=decision,
+        )
+
         # Commit only after the entire turn succeeds. An interpreter,
         # verbalizer, or validation failure therefore cannot leave the
         # session in a partially advanced state.
         self._state = next_state
         self._progress = next_progress
+        self._pending_offer = next_pending_offer
 
         return SessionTurnResult(
             agent_turn=agent_turn,
@@ -308,6 +324,39 @@ class PatientSession:
                 state_update_seconds=(perf_counter() - state_update_started),
             ),
         )
+
+    @staticmethod
+    def _next_pending_offer(
+        *,
+        current: AppointmentOffer | None,
+        meaning: TurnMeaning,
+        decision: CommunicationDecision,
+    ) -> AppointmentOffer | None:
+        """Advance trusted elliptical scheduling context deterministically."""
+        if decision.kind is CommunicationKind.ACCEPT_PARTIAL_OFFER:
+            offer = meaning.appointment_offer
+
+            if offer is None:
+                raise RuntimeError(
+                    "Partial-offer decision requires an appointment offer."
+                )
+
+            if (offer.day is None) == (offer.time is None):
+                raise RuntimeError(
+                    "Partial-offer decision requires exactly one slot detail."
+                )
+
+            return offer
+
+        if decision.kind in {
+            CommunicationKind.ACCEPT_OFFER,
+            CommunicationKind.DECLINE_OFFER,
+            CommunicationKind.ACKNOWLEDGE_COMPLETE,
+            CommunicationKind.END_CONVERSATION,
+        }:
+            return None
+
+        return current
 
     def _advance_progress(
         self,

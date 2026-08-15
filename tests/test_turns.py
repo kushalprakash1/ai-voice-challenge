@@ -138,3 +138,52 @@ def test_gap_splitting_can_be_disabled_for_live_endpointing() -> None:
 
     assert turn is not None
     assert turn.text == ("Great. Your book for Friday at 2.30 p.m.")
+
+
+def test_suppresses_rapid_duplicate_finalized_line() -> None:
+    assembler = TurnAssembler(
+        max_gap_seconds=2.0,
+        split_on_gap=False,
+        duplicate_window_seconds=0.75,
+    )
+
+    assembler.add_line(
+        "Friday.",
+        completed_at=1.0,
+    )
+    assembler.add_line(
+        "Friday.",
+        completed_at=1.2,
+    )
+
+    turn = assembler.flush()
+
+    assert turn is not None
+    assert turn.text == "Friday."
+    assert turn.lines == ("Friday.",)
+
+
+def test_preserves_intentional_repeat_outside_duplicate_window() -> None:
+    assembler = TurnAssembler(
+        max_gap_seconds=2.0,
+        split_on_gap=False,
+        duplicate_window_seconds=0.5,
+    )
+
+    assembler.add_line(
+        "Friday.",
+        completed_at=1.0,
+    )
+    assembler.add_line(
+        "Friday.",
+        completed_at=1.75,
+    )
+
+    turn = assembler.flush()
+
+    assert turn is not None
+    assert turn.text == "Friday. Friday."
+    assert turn.lines == (
+        "Friday.",
+        "Friday.",
+    )

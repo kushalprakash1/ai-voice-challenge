@@ -9,6 +9,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+DEFAULT_DUPLICATE_WINDOW_SECONDS = 0.75
+
+
+def _duplicate_key(text: str) -> str:
+    """Normalize punctuation-only variation in rapid ASR duplicates."""
+    return text.casefold().rstrip("?!.,:;…").strip()
+
 
 @dataclass(frozen=True, slots=True)
 class CompletedTurn:
@@ -28,12 +35,17 @@ class TurnAssembler:
         max_gap_seconds: float = 0.9,
         *,
         split_on_gap: bool = True,
+        duplicate_window_seconds: float = DEFAULT_DUPLICATE_WINDOW_SECONDS,
     ) -> None:
         if max_gap_seconds <= 0:
             raise ValueError("max_gap_seconds must be greater than zero.")
 
+        if duplicate_window_seconds < 0:
+            raise ValueError("duplicate_window_seconds cannot be negative.")
+
         self.max_gap_seconds = max_gap_seconds
         self.split_on_gap = split_on_gap
+        self.duplicate_window_seconds = duplicate_window_seconds
         self._lines: list[str] = []
         self._started_at: float | None = None
         self._last_line_at: float | None = None
@@ -75,6 +87,18 @@ class TurnAssembler:
             and completed_at - self._last_line_at > self.max_gap_seconds
         ):
             previous_turn = self.flush(completed_at=self._last_line_at)
+
+        if (
+            self._lines
+            and self._last_line_at is not None
+            and completed_at - self._last_line_at <= self.duplicate_window_seconds
+            and _duplicate_key(normalized) == _duplicate_key(self._lines[-1])
+        ):
+            # Moonshine can emit the same short finalized phrase twice at a
+            # streaming boundary. Advance the endpoint clock without adding
+            # duplicate conversational content.
+            self._last_line_at = completed_at
+            return previous_turn
 
         if self._started_at is None:
             self._started_at = completed_at
