@@ -13,6 +13,7 @@ from typing import Final
 from voiceprobe.scenarios.models import (
     PatientFacts,
     PatientScenario,
+    ProbeKind,
 )
 
 DEFAULT_SCENARIO_ID: Final = "autonomous-phone-diagnostic"
@@ -218,6 +219,7 @@ SCENARIOS: Final[tuple[PatientScenario, ...]] = (
             "clarification",
             "conversation_recovery",
         ),
+        probes=(ProbeKind.REQUEST_AGENT_REPEAT_ONCE,),
     ),
     PatientScenario(
         scenario_id="booking-confirmation-robustness",
@@ -236,6 +238,7 @@ SCENARIOS: Final[tuple[PatientScenario, ...]] = (
             "asr_booking_confirmation",
             "objective_completion",
         ),
+        probes=(ProbeKind.VERIFY_BOOKING_BEFORE_END,),
     ),
 )
 

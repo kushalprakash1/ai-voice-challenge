@@ -29,6 +29,7 @@ class PlannedScenarioCall:
     scenario_id: str
     objective: str
     test_targets: tuple[str, ...]
+    probes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +96,7 @@ def build_suite_plan(
             scenario_id=scenario.scenario_id,
             objective=scenario.objective,
             test_targets=scenario.test_targets,
+            probes=tuple(probe.value for probe in scenario.probes),
         )
         for index, scenario in enumerate(
             selected,

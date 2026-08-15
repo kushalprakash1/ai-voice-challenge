@@ -19,6 +19,7 @@ from voiceprobe.agents.brain import (
     CommunicationKind,
     PatientBrain,
 )
+from voiceprobe.agents.probes import ProbeProgress, apply_probe_policy
 from voiceprobe.conversation.grounding import (
     GroundedTurnMeaning,
     ground_turn_meaning,
@@ -148,6 +149,7 @@ class PatientSession:
 
         self._state = build_initial_state(scenario)
         self._progress = AppointmentProgress()
+        self._probe_progress = ProbeProgress()
 
         # Narrow conversational context for elliptical scheduling replies.
         # This is populated only after PatientBrain has determined that a
@@ -210,6 +212,7 @@ class PatientSession:
         # recent-history context.
         pre_turn_state = self._state
         pre_turn_progress = self._progress
+        pre_turn_probe_progress = self._probe_progress
 
         interpreter_started = perf_counter()
 
@@ -256,6 +259,18 @@ class PatientSession:
             scenario=self._scenario,
             grounded=grounded,
             progress=pre_turn_progress,
+        )
+
+        prior_agent_turn_count = sum(
+            message.speaker.value == "agent" for message in pre_turn_state.messages
+        )
+
+        decision, next_probe_progress = apply_probe_policy(
+            scenario=self._scenario,
+            appointment=pre_turn_progress,
+            probe_progress=pre_turn_probe_progress,
+            prior_agent_turn_count=prior_agent_turn_count,
+            base_decision=decision,
         )
 
         state_with_agent = record_agent_turn(
@@ -307,6 +322,7 @@ class PatientSession:
         # session in a partially advanced state.
         self._state = next_state
         self._progress = next_progress
+        self._probe_progress = next_probe_progress
         self._pending_offer = next_pending_offer
 
         return SessionTurnResult(

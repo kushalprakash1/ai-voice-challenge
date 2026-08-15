@@ -6,7 +6,16 @@ these facts conversationally, but they must not invent or overwrite them.
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class ProbeKind(StrEnum):
+    """Patient-driven experiment behavior that can be enacted deterministically."""
+
+    REQUEST_AGENT_REPEAT_ONCE = "request_agent_repeat_once"
+    VERIFY_BOOKING_BEFORE_END = "verify_booking_before_end"
 
 
 class PatientFacts(BaseModel):
@@ -58,6 +67,7 @@ class PatientScenario(BaseModel):
     objective: str = Field(min_length=1)
     facts: PatientFacts
     test_targets: tuple[str, ...] = ()
+    probes: tuple[ProbeKind, ...] = ()
 
     @field_validator("objective")
     @classmethod
@@ -69,3 +79,15 @@ class PatientScenario(BaseModel):
             raise ValueError("Scenario objective cannot be blank.")
 
         return normalized
+
+    @field_validator("probes")
+    @classmethod
+    def reject_duplicate_probes(
+        cls,
+        value: tuple[ProbeKind, ...],
+    ) -> tuple[ProbeKind, ...]:
+        """Keep experiment behavior deterministic and non-redundant."""
+        if len(value) != len(set(value)):
+            raise ValueError("Scenario probes cannot contain duplicates.")
+
+        return value

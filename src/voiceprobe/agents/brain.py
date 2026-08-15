@@ -14,7 +14,7 @@ from voiceprobe.conversation.grounding import GroundedTurnMeaning
 from voiceprobe.conversation.objective import AppointmentProgress
 from voiceprobe.conversation.scheduling import time_matches_preference
 from voiceprobe.conversation.state import FactKey
-from voiceprobe.scenarios.models import PatientScenario
+from voiceprobe.scenarios.models import PatientScenario, ProbeKind
 
 
 class CommunicationKind(StrEnum):
@@ -28,6 +28,8 @@ class CommunicationKind(StrEnum):
     REPEAT = "repeat"
     ACKNOWLEDGE_COMPLETE = "acknowledge_complete"
     END_CONVERSATION = "end_conversation"
+    ASK_AGENT_TO_REPEAT = "ask_agent_to_repeat"
+    VERIFY_BOOKING = "verify_booking"
     CLARIFY = "clarify"
 
 
@@ -39,6 +41,7 @@ class CommunicationDecision:
     facts_to_communicate: tuple[FactKey, ...] = ()
     offered_day: str | None = None
     offered_time: str | None = None
+    probe: ProbeKind | None = None
 
 
 class PatientBrain:

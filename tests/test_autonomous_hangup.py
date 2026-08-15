@@ -95,6 +95,7 @@ class FakeSession:
             decision=SimpleNamespace(
                 kind=self.kind,
                 facts_to_communicate=(),
+                probe=None,
             ),
             meaning=SimpleNamespace(),
             progress=SimpleNamespace(

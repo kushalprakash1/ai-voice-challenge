@@ -255,6 +255,22 @@ class OllamaNaturalVerbalizer:
                 "another question and do not reopen scheduling."
             )
 
+        if decision.kind is CommunicationKind.ASK_AGENT_TO_REPEAT:
+            return (
+                "Ask the caller to repeat their immediately preceding question "
+                "in one short natural sentence, preferably about 3 to 8 spoken "
+                "words. Do not answer it yet and do not add patient facts."
+            )
+
+        if decision.kind is CommunicationKind.VERIFY_BOOKING:
+            return (
+                "Naturally ask the caller to confirm that the offered appointment "
+                "slot is booked. Prefer conversational phrasing such as 'Just to "
+                "confirm, am I booked for Friday at 2:30 PM?' while using only the "
+                "actual offered day and time. Avoid words such as 'actually', "
+                "'test', or 'verify'. Do not invent any scheduling detail."
+            )
+
         if decision.kind is CommunicationKind.CLARIFY:
             return (
                 "Ask for clarification very briefly, preferably in one "

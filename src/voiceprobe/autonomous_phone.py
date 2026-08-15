@@ -197,6 +197,11 @@ def process_turns(
                 patient_text=result.patient_text,
                 decision=result.decision.kind.value,
                 facts_to_communicate=(result.decision.facts_to_communicate),
+                probe=(
+                    result.decision.probe.value
+                    if result.decision.probe is not None
+                    else None
+                ),
                 meaning=result.meaning,
                 objective_complete=(result.progress.objective_complete),
             )
