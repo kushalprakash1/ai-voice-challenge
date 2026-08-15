@@ -26,6 +26,7 @@ import numpy as np
 from kokoro import KPipeline
 
 from voiceprobe.agents.brain import PatientBrain
+from voiceprobe.artifacts.recorder import RunArtifactRecorder
 from voiceprobe.conversation.session import PatientSession
 from voiceprobe.conversation.turns import CompletedTurn
 from voiceprobe.interpreters.ollama import OllamaConversationInterpreter
@@ -108,12 +109,19 @@ def synthesize(
 def send_audio(
     connection: socket.socket,
     pcm16: bytes,
+    *,
+    recorder: RunArtifactRecorder | None = None,
 ) -> None:
     """Send one patient response at telephony playback cadence."""
     next_deadline = time.monotonic()
 
     for frame in iter_pcm_frames(pcm16):
         connection.sendall(build_audiosocket_packet(frame))
+
+        # Capture only audio successfully handed to AudioSocket.
+        # A failed send must not appear as if it reached the call.
+        if recorder is not None:
+            recorder.record_outbound_pcm(frame)
 
         next_deadline += FRAME_DURATION_SECONDS
 
@@ -132,6 +140,7 @@ def process_turns(
     voice: str,
     busy: threading.Event,
     stop: threading.Event,
+    recorder: RunArtifactRecorder,
 ) -> None:
     """Process complete ASR turns sequentially."""
     while True:
@@ -158,11 +167,31 @@ def process_turns(
             print(f"PATIENT TEXT: {result.patient_text}")
             print(f"DECISION:     {result.decision.kind.value}")
 
+            recorder.record_event(
+                "patient_response_generated",
+                agent_turn=turn.text,
+                patient_text=result.patient_text,
+                decision=result.decision.kind.value,
+                facts_to_communicate=(result.decision.facts_to_communicate),
+                meaning=result.meaning,
+                objective_complete=(result.progress.objective_complete),
+            )
+
             if result.progress.objective_complete:
+                recorder.record_event(
+                    "objective_complete",
+                    decision=result.decision.kind.value,
+                )
                 print()
                 print("*** APPOINTMENT OBJECTIVE COMPLETE ***")
 
             if stop.is_set():
+                recorder.record_event(
+                    "tts_skipped",
+                    reason="call_ended",
+                    patient_text=result.patient_text,
+                )
+
                 print(
                     "[CALL ENDED] Skipping TTS for completed turn.",
                     flush=True,
@@ -174,6 +203,12 @@ def process_turns(
             tts_text = normalize_text_for_tts(result.patient_text)
 
             if tts_text != result.patient_text:
+                recorder.record_event(
+                    "tts_text_normalized",
+                    original_text=result.patient_text,
+                    tts_text=tts_text,
+                )
+
                 print(
                     f"TTS TEXT:     {tts_text}",
                     flush=True,
@@ -210,18 +245,70 @@ def process_turns(
             print(f"Endpoint/queue: {endpoint_and_queue_seconds:.3f}s")
             print(f"Response prep:  {response_prep_seconds:.3f}s")
             print(f"Speech length:  {audio_seconds:.3f}s")
+
+            recorder.record_turn_metrics(
+                {
+                    "agent_turn": turn.text,
+                    "decision": result.decision.kind.value,
+                    "interpreter_seconds": (result.timings.interpreter_seconds),
+                    "decision_seconds": (result.timings.decision_seconds),
+                    "verbalizer_seconds": (result.timings.verbalizer_seconds),
+                    "state_update_seconds": (result.timings.state_update_seconds),
+                    "reasoning_seconds": reasoning_seconds,
+                    "tts_seconds": tts_seconds,
+                    "endpoint_queue_seconds": (endpoint_and_queue_seconds),
+                    "response_prep_seconds": (response_prep_seconds),
+                    "speech_seconds": audio_seconds,
+                    "objective_complete": (result.progress.objective_complete),
+                }
+            )
+
+            recorder.record_event(
+                "response_prepared",
+                decision=result.decision.kind.value,
+                response_prep_seconds=(response_prep_seconds),
+                speech_seconds=audio_seconds,
+            )
+
             if stop.is_set():
+                recorder.record_event(
+                    "playback_skipped",
+                    reason="call_ended",
+                    patient_text=result.patient_text,
+                )
+
                 print(
                     "[CALL ENDED] Skipping audio playback.",
                     flush=True,
                 )
                 return
 
+            recorder.record_event(
+                "playback_started",
+                patient_text=result.patient_text,
+                tts_text=tts_text,
+            )
+
             print("Speaking...")
 
             send_audio(
                 connection,
                 pcm16,
+                recorder=recorder,
+            )
+
+            recorder.record_transcript_turn(
+                speaker="patient",
+                text=result.patient_text,
+                decision=result.decision.kind.value,
+                tts_text=tts_text,
+                objective_complete=(result.progress.objective_complete),
+            )
+
+            recorder.record_event(
+                "playback_finished",
+                patient_text=result.patient_text,
+                speech_seconds=audio_seconds,
             )
 
             print("Speech complete.")
@@ -238,6 +325,13 @@ def process_turns(
             TypeError,
             ValueError,
         ) as error:
+            recorder.record_event(
+                "turn_error",
+                error_type=type(error).__name__,
+                error_message=str(error),
+                agent_turn=(turn.text if turn is not None else None),
+            )
+
             print()
             print(f"TURN ERROR: {type(error).__name__}: {error}")
 
@@ -254,7 +348,8 @@ def handle_call(
     session: PatientSession,
     pipeline: KPipeline,
     voice: str,
-) -> None:
+    recorder: RunArtifactRecorder,
+) -> uuid.UUID | None:
     """Run one autonomous half-duplex AudioSocket call."""
     turn_queue: queue.Queue[CompletedTurn | None] = queue.Queue()
 
@@ -270,6 +365,11 @@ def handle_call(
         started = session.prefetch_agent_turn(candidate_text)
 
         if started:
+            recorder.record_event(
+                "prefetch_started",
+                candidate_text=candidate_text,
+            )
+
             print(
                 f"[PREFETCH START] {candidate_text!r}",
                 flush=True,
@@ -288,8 +388,28 @@ def handle_call(
             return
 
         if busy.is_set():
+            recorder.record_event(
+                "agent_turn_dropped",
+                reason="half_duplex_busy",
+                text=turn.text,
+            )
+
             print(f"[HALF-DUPLEX] Dropping overlapping turn: {turn.text!r}")
             return
+
+        recorder.record_transcript_turn(
+            speaker="agent",
+            text=turn.text,
+            asr_lines=turn.lines,
+            asr_started_at_monotonic=turn.started_at,
+            asr_completed_at_monotonic=turn.completed_at,
+        )
+
+        recorder.record_event(
+            "agent_turn_completed",
+            text=turn.text,
+            lines=turn.lines,
+        )
 
         busy.set()
         turn_queue.put_nowait(turn)
@@ -310,6 +430,7 @@ def handle_call(
             "voice": voice,
             "busy": busy,
             "stop": stop,
+            "recorder": recorder,
         },
         daemon=True,
     )
@@ -319,6 +440,10 @@ def handle_call(
     transcriber.start()
     worker.start()
 
+    recorder.record_event(
+        "call_processing_started",
+    )
+
     try:
         while True:
             header = recv_exact(
@@ -327,8 +452,11 @@ def handle_call(
             )
 
             if header is None:
+                recorder.record_event(
+                    "audiosocket_disconnected",
+                )
                 print("AudioSocket disconnected.")
-                return
+                break
 
             message_type = header[0]
             payload_length = int.from_bytes(
@@ -342,16 +470,28 @@ def handle_call(
             )
 
             if payload is None:
+                recorder.record_event(
+                    "audiosocket_payload_disconnected",
+                )
                 print("AudioSocket disconnected during payload.")
-                return
+                break
 
             if message_type == TYPE_HANGUP:
+                recorder.record_event(
+                    "hangup_received",
+                )
                 print("Call ended.")
-                return
+                break
 
             if message_type == TYPE_UUID:
                 if len(payload) == 16:
                     call_id = uuid.UUID(bytes=payload)
+
+                    recorder.record_event(
+                        "call_uuid_received",
+                        call_id=str(call_id),
+                    )
+
                     print(f"Call UUID: {call_id}")
 
                 continue
@@ -361,11 +501,21 @@ def handle_call(
                     "ascii",
                     errors="replace",
                 )
+                recorder.record_event(
+                    "dtmf_received",
+                    digit=digit,
+                )
+
                 print(f"DTMF: {digit}")
                 continue
 
             if message_type != TYPE_PCM_8KHZ:
                 continue
+
+            # Preserve everything actually received from AudioSocket,
+            # including speech that half-duplex logic intentionally
+            # withholds from Moonshine.
+            recorder.record_inbound_pcm(payload)
 
             # First diagnostic is intentionally half-duplex. Audio
             # received while VoiceProbe is reasoning/speaking is consumed
@@ -393,9 +543,27 @@ def handle_call(
             timeout=5.0,
         )
 
+        if worker.is_alive():
+            recorder.record_event(
+                "worker_drain_wait",
+                initial_timeout_seconds=5.0,
+            )
+
+            # The Ollama client itself is timeout-bounded. Finish draining
+            # the worker before closing/finalizing call artifacts so it
+            # cannot write into already-closed recorder files.
+            worker.join()
+
         transcriber.close()
 
+        recorder.record_event(
+            "call_processing_finished",
+            call_id=(str(call_id) if call_id is not None else None),
+        )
+
         print(f"Autonomous call complete: call_id={call_id}")
+
+    return call_id
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -506,15 +674,34 @@ def main(
 
             connection, address = server.accept()
 
-            with connection:
-                print(f"Asterisk connected from {address}")
+            with RunArtifactRecorder(
+                root="artifacts/runs",
+                scenario=scenario,
+            ) as recorder:
+                print(f"Run artifacts: {recorder.run_dir}")
 
-                handle_call(
-                    connection=connection,
-                    session=session,
-                    pipeline=pipeline,
-                    voice=args.voice,
+                recorder.record_event(
+                    "asterisk_connected",
+                    address=address,
                 )
+
+                with connection:
+                    print(f"Asterisk connected from {address}")
+
+                    call_id = handle_call(
+                        connection=connection,
+                        session=session,
+                        pipeline=pipeline,
+                        voice=args.voice,
+                        recorder=recorder,
+                    )
+
+                recorder.finalize(
+                    status="completed",
+                    call_id=(str(call_id) if call_id is not None else None),
+                )
+
+                print(f"Run artifacts finalized: {recorder.run_dir}")
 
     return 0
 

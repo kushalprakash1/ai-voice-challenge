@@ -219,4 +219,4 @@ __marimo__/
 
 # Local VoiceProbe diagnostics, recordings, benchmarks, and debug artifacts.
 # Public submission evidence is exported separately under submission/.
-artifacts/
+/artifacts/

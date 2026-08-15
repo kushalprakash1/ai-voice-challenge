@@ -83,3 +83,58 @@ def test_normalizes_internal_whitespace() -> None:
 def test_rejects_non_positive_gap() -> None:
     with pytest.raises(ValueError):
         TurnAssembler(max_gap_seconds=0)
+
+
+def test_gap_splitting_remains_default_behavior() -> None:
+    assembler = TurnAssembler(
+        max_gap_seconds=2.0,
+    )
+
+    assert (
+        assembler.add_line(
+            "First line.",
+            completed_at=10.0,
+        )
+        is None
+    )
+
+    previous = assembler.add_line(
+        "Second line.",
+        completed_at=12.5,
+    )
+
+    assert previous is not None
+    assert previous.text == "First line."
+
+    remaining = assembler.flush()
+
+    assert remaining is not None
+    assert remaining.text == "Second line."
+
+
+def test_gap_splitting_can_be_disabled_for_live_endpointing() -> None:
+    assembler = TurnAssembler(
+        max_gap_seconds=2.0,
+        split_on_gap=False,
+    )
+
+    assert (
+        assembler.add_line(
+            "Great.",
+            completed_at=10.0,
+        )
+        is None
+    )
+
+    assert (
+        assembler.add_line(
+            "Your book for Friday at 2.30 p.m.",
+            completed_at=12.5,
+        )
+        is None
+    )
+
+    turn = assembler.flush()
+
+    assert turn is not None
+    assert turn.text == ("Great. Your book for Friday at 2.30 p.m.")

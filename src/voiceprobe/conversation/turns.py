@@ -23,11 +23,17 @@ class CompletedTurn:
 class TurnAssembler:
     """Combine finalized ASR lines into human-level conversational turns."""
 
-    def __init__(self, max_gap_seconds: float = 0.9) -> None:
+    def __init__(
+        self,
+        max_gap_seconds: float = 0.9,
+        *,
+        split_on_gap: bool = True,
+    ) -> None:
         if max_gap_seconds <= 0:
             raise ValueError("max_gap_seconds must be greater than zero.")
 
         self.max_gap_seconds = max_gap_seconds
+        self.split_on_gap = split_on_gap
         self._lines: list[str] = []
         self._started_at: float | None = None
         self._last_line_at: float | None = None
@@ -64,7 +70,8 @@ class TurnAssembler:
         previous_turn: CompletedTurn | None = None
 
         if (
-            self._last_line_at is not None
+            self.split_on_gap
+            and self._last_line_at is not None
             and completed_at - self._last_line_at > self.max_gap_seconds
         ):
             previous_turn = self.flush(completed_at=self._last_line_at)

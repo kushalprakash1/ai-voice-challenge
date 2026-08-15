@@ -49,6 +49,11 @@ class ConsoleTranscriptListener(TranscriptEventListener):
     ) -> None:
         self._assembler = TurnAssembler(
             max_gap_seconds=TURN_GAP_SECONDS,
+            # Moonshine exposes explicit start/partial activity. The
+            # listener's endpoint timer therefore owns live turn
+            # boundaries; finalized-line processing time must not split
+            # one continuously spoken utterance.
+            split_on_gap=False,
         )
         self._on_turn = on_turn
         self._on_candidate = on_candidate
