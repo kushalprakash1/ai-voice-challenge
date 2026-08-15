@@ -55,10 +55,10 @@ def load_ami_config(
 
     raw = dict(dotenv_values(path))
 
-    username = _required_env_value(raw, "username")
-    secret = _required_env_value(raw, "secret")
-    host = _required_env_value(raw, "host")
-    port_text = _required_env_value(raw, "port")
+    username = _required_env_value(raw, "VOICEPROBE_AMI_USERNAME")
+    secret = _required_env_value(raw, "VOICEPROBE_AMI_SECRET")
+    host = _required_env_value(raw, "VOICEPROBE_AMI_HOST")
+    port_text = _required_env_value(raw, "VOICEPROBE_AMI_PORT")
 
     return AsteriskAMIConfig(
         username=username,
