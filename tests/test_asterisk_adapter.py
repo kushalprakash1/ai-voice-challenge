@@ -218,10 +218,28 @@ def test_invalid_max_duration_is_rejected_before_any_side_effect() -> None:
         CallExecutionError,
         match="duration",
     ):
-        adapter.execute_call(make_request(max_duration_seconds=181))
+        adapter.execute_call(make_request(max_duration_seconds=601))
 
     assert events == []
 
+
+
+def test_five_minute_duration_is_accepted_by_adapter() -> None:
+    events: list[str] = []
+
+    adapter = build_adapter(
+        events,
+        successful_media_executor(events),
+    )
+
+    result = adapter.execute_call(
+        make_request(
+            max_duration_seconds=300,
+        )
+    )
+
+    assert result.duration_seconds == 84.25
+    assert events.count("ami_originate") == 1
 
 def test_media_call_id_mismatch_is_rejected() -> None:
     events: list[str] = []

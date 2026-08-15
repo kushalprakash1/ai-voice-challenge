@@ -37,6 +37,7 @@ from voiceprobe.autonomous_phone import (
 from voiceprobe.conversation.session import PatientSession
 from voiceprobe.interpreters.ollama import OllamaConversationInterpreter
 from voiceprobe.policy import CallPolicy
+from voiceprobe.policy import MAX_CALL_DURATION_SECONDS
 from voiceprobe.runner import (
     AssessmentCallRequest,
     AssessmentCallResult,
@@ -378,10 +379,10 @@ class AsteriskAssessmentCallAdapter:
                 request.max_duration_seconds,
                 int,
             )
-            or not 1 <= request.max_duration_seconds <= 180
+            or not 1 <= request.max_duration_seconds <= MAX_CALL_DURATION_SECONDS
         ):
             raise CallExecutionError(
-                "Assessment call duration must be between 1 and 180 seconds."
+                f"Assessment call duration must be between 1 and {MAX_CALL_DURATION_SECONDS} seconds."
             )
 
         # Resolve the scenario before any AMI side effect.
