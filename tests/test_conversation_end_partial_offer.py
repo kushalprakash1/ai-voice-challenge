@@ -145,8 +145,8 @@ def test_partial_offer_verbalizer_goal_requires_missing_detail() -> None:
     )
 
     assert "missing day or time" in goal
-    assert "still incomplete" in goal
     assert "complete appointment" in goal
+    assert "at most 12 spoken words" in goal
 
 
 def test_end_conversation_verbalizer_goal_forbids_reopening() -> None:

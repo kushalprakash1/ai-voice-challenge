@@ -117,7 +117,7 @@ class OllamaNaturalVerbalizer:
                 "keep_alive": "30m",
                 "options": {
                     "temperature": 0.35,
-                    "num_predict": 40,
+                    "num_predict": 96,
                 },
                 "format": VerbalizedResponse.model_json_schema(),
                 "messages": [
@@ -219,9 +219,9 @@ class OllamaNaturalVerbalizer:
 
         if decision.kind is CommunicationKind.ACCEPT_PARTIAL_OFFER:
             return (
-                "Acknowledge that the appointment detail the caller actually "
-                "provided works, but make clear that the slot is still incomplete. "
-                "Immediately ask for the missing day or time. Do not imply that a "
+                "Confirm only the appointment detail the caller provided, then "
+                "ask for the missing day or time. Use at most 12 spoken words "
+                "total, preferably as two short clauses. Do not imply that a "
                 "complete appointment has been accepted or booked."
             )
 
