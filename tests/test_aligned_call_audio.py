@@ -136,3 +136,46 @@ def test_simultaneous_audio_is_mixed_with_pcm16_clipping(
 
     # 30,000 + 30,000 must saturate rather than wrap around.
     assert all(sample == 32_767 for sample in call)
+
+
+def test_buffered_inbound_packets_remain_sequential(
+    tmp_path: Path,
+) -> None:
+    """Rapid socket reads must not collapse consecutive media frames."""
+    clock = FakeClock()
+    scenario = get_scenario("autonomous-phone-diagnostic")
+
+    recorder = RunArtifactRecorder(
+        root=tmp_path,
+        scenario=scenario,
+        run_id="buffered-inbound",
+        clock=clock,
+    )
+
+    # Pretend three consecutive 20 ms AudioSocket packets are already
+    # buffered. Python receives all three at effectively the same wall-clock
+    # instant, but they still represent 60 ms of consecutive source audio.
+    clock.set(100.020)
+
+    recorder.record_inbound_pcm(pcm16(1_000, 160))
+    recorder.record_inbound_pcm(pcm16(2_000, 160))
+    recorder.record_inbound_pcm(pcm16(3_000, 160))
+
+    recorder.finalize()
+
+    call, sample_rate = sf.read(
+        tmp_path / "buffered-inbound" / "call.wav",
+        dtype="int16",
+    )
+
+    assert sample_rate == AUDIO_SAMPLE_RATE_HZ
+
+    # All three packets survive as 60 ms of sequential audio instead of
+    # being mixed into the same 20 ms region.
+    assert len(call) == 480
+
+    assert all(sample == 1_000 for sample in call[0:160])
+
+    assert all(sample == 2_000 for sample in call[160:320])
+
+    assert all(sample == 3_000 for sample in call[320:480])

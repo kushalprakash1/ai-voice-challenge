@@ -160,6 +160,13 @@ class RunArtifactRecorder:
         # public listening artifacts are materialized at finalization.
         self._timeline_samples: list[int] = []
 
+        # AudioSocket PCM is an ordered media stream. Multiple inbound
+        # packets can already be buffered and therefore be read only
+        # microseconds apart even though they represent consecutive 20 ms
+        # sections of audio. Wall-clock arrival time anchors the first frame;
+        # subsequent frames advance by their exact sample counts.
+        self._inbound_timeline_next_sample: int | None = None
+
         self._finalized = False
 
         _write_json_atomic(
@@ -334,18 +341,30 @@ class RunArtifactRecorder:
             )
 
             if direction == "inbound":
-                # AudioSocket delivers a frame after those samples were
-                # captured, so place the frame immediately before its receive
-                # timestamp.
-                timeline_start_sample = max(
-                    0,
-                    elapsed_sample - frame_sample_count,
+                if self._inbound_timeline_next_sample is None:
+                    # The first frame establishes the absolute relationship
+                    # between the ordered AudioSocket stream and this run's
+                    # shared timeline.
+                    timeline_start_sample = max(
+                        0,
+                        elapsed_sample - frame_sample_count,
+                    )
+                else:
+                    # Never timestamp later inbound packets independently.
+                    # Buffered socket reads may deliver consecutive media
+                    # packets almost simultaneously in wall-clock time.
+                    timeline_start_sample = self._inbound_timeline_next_sample
+
+                self._inbound_timeline_next_sample = (
+                    timeline_start_sample + frame_sample_count
                 )
+
             elif direction == "outbound":
-                # Outbound frames are recorded immediately after sendall()
-                # succeeds. That timestamp therefore represents the beginning
-                # of telephony playback for this frame.
+                # Outbound send_audio() is explicitly paced at telephony frame
+                # cadence, so its successful send time remains an appropriate
+                # shared-timeline position.
                 timeline_start_sample = elapsed_sample
+
             else:
                 raise ValueError(f"Unknown audio direction: {direction}")
 
