@@ -76,6 +76,7 @@ ECHO_GUARD_SECONDS = 0.35
 # so time-critical replies do not wait for Kokoro inference.
 PRE_RENDERED_TTS_TEXTS = (
     "No, I need an appointment.",
+    "I need to schedule an appointment for Friday afternoon.",
     "Yes, please.",
     "Yes, that works.",
     "Could you repeat that?",

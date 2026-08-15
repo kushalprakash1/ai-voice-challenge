@@ -192,7 +192,10 @@ def test_ollama_fallback_accepts_general_semantics_and_receives_objective() -> N
         meaning = interpreter.interpret(
             scenario=scenario,
             state=build_initial_state(scenario),
-            agent_turn="I'm able to create a patient profile if needed. Is that something you'd like?",
+            agent_turn=(
+                "There is an auxiliary intake pathway available. "
+                "Please tell me whether that makes sense for you."
+            ),
         )
     finally:
         interpreter.close()
@@ -214,7 +217,7 @@ def test_ollama_fallback_accepts_general_semantics_and_receives_objective() -> N
     assert context["conversation_objective"] == scenario.objective
     assert (
         context["latest_tested_agent_turn"]
-        == "I'm able to create a patient profile if needed. Is that something you'd like?"
+        == "There is an auxiliary intake pathway available. Please tell me whether that makes sense for you."
     )
 
     serialized_prompt = json.dumps(messages)

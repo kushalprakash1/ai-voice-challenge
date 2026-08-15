@@ -52,6 +52,7 @@ class CommunicationDecision:
     offered_day: str | None = None
     offered_time: str | None = None
     probe: ProbeKind | None = None
+    state_objective: bool = False
 
 
 class PatientBrain:

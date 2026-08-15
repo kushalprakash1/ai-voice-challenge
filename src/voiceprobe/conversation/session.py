@@ -24,6 +24,10 @@ from voiceprobe.conversation.grounding import (
     GroundedTurnMeaning,
     ground_turn_meaning,
 )
+from voiceprobe.conversation.goal_policy import (
+    GoalContext,
+    apply_goal_policy,
+)
 from voiceprobe.conversation.meaning import (
     AppointmentOffer,
     TurnMeaning,
@@ -151,6 +155,9 @@ class PatientSession:
         self._progress = AppointmentProgress()
         self._probe_progress = ProbeProgress()
 
+        # Persistent workflow focus for elliptical references.
+        self._goal_context = GoalContext()
+
         # Narrow conversational context for elliptical scheduling replies.
         # This is populated only after PatientBrain has determined that a
         # partial offer is compatible with patient truth.
@@ -165,6 +172,11 @@ class PatientSession:
     def progress(self) -> AppointmentProgress:
         """Current immutable appointment progress."""
         return self._progress
+
+    @property
+    def goal_context(self) -> GoalContext:
+        """Persistent workflow focus for the scheduling mission."""
+        return self._goal_context
 
     def prefetch_agent_turn(
         self,
@@ -213,6 +225,7 @@ class PatientSession:
         pre_turn_state = self._state
         pre_turn_progress = self._progress
         pre_turn_probe_progress = self._probe_progress
+        pre_turn_goal_context = self._goal_context
 
         interpreter_started = perf_counter()
 
@@ -274,6 +287,20 @@ class PatientSession:
             booking_confirmed_this_turn=meaning.booking_confirmed,
         )
 
+        # Final deterministic mission guard.
+        #
+        # Semantic interpretation may describe what was said and the
+        # brain may propose a response, but neither may redirect the
+        # patient into an unrelated workflow.
+        decision, next_goal_context = apply_goal_policy(
+            scenario=self._scenario,
+            grounded=grounded,
+            progress=pre_turn_progress,
+            agent_turn=agent_turn,
+            context=pre_turn_goal_context,
+            base_decision=decision,
+        )
+
         state_with_agent = record_agent_turn(
             pre_turn_state,
             agent_turn,
@@ -290,6 +317,7 @@ class PatientSession:
             self._state = state_with_agent
             self._progress = pre_turn_progress
             self._probe_progress = next_probe_progress
+            self._goal_context = next_goal_context
 
             return SessionTurnResult(
                 agent_turn=agent_turn,
@@ -351,6 +379,7 @@ class PatientSession:
         self._progress = next_progress
         self._probe_progress = next_probe_progress
         self._pending_offer = next_pending_offer
+        self._goal_context = next_goal_context
 
         return SessionTurnResult(
             agent_turn=agent_turn,

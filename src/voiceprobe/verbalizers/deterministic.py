@@ -55,6 +55,11 @@ class DeterministicNaturalVerbalizer:
 
         kind = decision.kind
 
+        if decision.state_objective:
+            return self._objective_text(
+                scenario=scenario,
+            )
+
         if kind is CommunicationKind.ANSWER:
             return self._answer_text(
                 scenario=scenario,
@@ -164,6 +169,35 @@ class DeterministicNaturalVerbalizer:
         raise ValueError(
             f"Unsupported communication kind: {decision.kind}"
         )
+
+    @staticmethod
+    def _objective_text(
+        *,
+        scenario: PatientScenario,
+    ) -> str:
+        """State the scheduling mission using authoritative preferences."""
+        day = scenario.facts.preferred_day
+        preferred_time = scenario.facts.preferred_time
+
+        if day is not None and preferred_time is not None:
+            return (
+                "I need to schedule an appointment for "
+                f"{day} {preferred_time}."
+            )
+
+        if day is not None:
+            return (
+                "I need to schedule an appointment for "
+                f"{day}."
+            )
+
+        if preferred_time is not None:
+            return (
+                "I need to schedule an appointment for "
+                f"{preferred_time}."
+            )
+
+        return "I need to schedule an appointment."
 
     @staticmethod
     def _fact_value(

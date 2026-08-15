@@ -175,6 +175,22 @@ _BOOKING_CONFIRMATION_RE = re.compile(
     r")\b"
 )
 
+
+_DECLARATIVE_NAME_REQUEST_RE = re.compile(
+    r"\b(?:"
+    r"i|we"
+    r")\s+"
+    r"(?:just\s+)?"
+    r"(?:need|require)\s+"
+    r"(?:your\s+)?"
+    r"(?:"
+    r"first\s+and\s+last\s+name|"
+    r"full\s+name|"
+    r"name"
+    r")\b"
+)
+
+
 _END_RE = re.compile(
     r"(?:"
     r"\bgoodbye\b|"
@@ -182,6 +198,33 @@ _END_RE = re.compile(
     r"\bhave a (?:good|great|nice|wonderful) day\b|"
     r"\btake care\b"
     r")"
+)
+
+
+
+# Open-ended receptionist prompts have an obvious response:
+# state the immutable scheduling objective.
+_OPEN_GOAL_RE = re.compile(
+    r"\b(?:"
+    r"how may i help you(?: today)?|"
+    r"how can i help you(?: today)?|"
+    r"what can i help you with|"
+    r"what would you like help with|"
+    r"what would you like to (?:do|try|ask)"
+    r"(?: or ask)?(?: about)?(?: next)?"
+    r")\b"
+)
+
+
+# Legal notices, language-selection prompts, and greetings do not
+# require a patient response.
+_NON_ACTIONABLE_RE = re.compile(
+    r"\b(?:"
+    r"this call may be recorded|"
+    r"call may be recorded|"
+    r"para espa(?:ñ|n)ol|"
+    r"thank you for calling"
+    r")\b"
 )
 
 
@@ -489,7 +532,56 @@ def deterministic_turn_meaning(
         )
 
     # --------------------------------------------------------------
-    # 3. Explicit workflow-permission grammar.
+    # 3. Open-ended call-purpose prompt.
+    #
+    # "How may I help you?" is not ambiguous. The patient should state
+    # the immutable scheduling objective.
+    # --------------------------------------------------------------
+    if _OPEN_GOAL_RE.search(text) is not None:
+        return TurnMeaning(
+            response_expectation=ResponseExpectation.FREEFORM,
+            workflow_relation=WorkflowRelation.ADVANCES_OBJECTIVE,
+            question_kind=QuestionKind.OTHER,
+            workflow_direction=WorkflowDirection.NONE,
+            topic="call purpose",
+            requested_facts=(),
+            conversation_end_requested=end_requested,
+        )
+
+    # --------------------------------------------------------------
+    # 4. Explicit side workflow.
+    #
+    # This is intentionally evaluated before fact extraction so:
+    #
+    # "I can create a demo patient profile. I need your name."
+    #
+    # cannot disclose the patient's name into the unwanted workflow.
+    # --------------------------------------------------------------
+    side_workflow = _SIDE_WORKFLOW_RE.search(text) is not None
+    required = _REQUIRED_RE.search(text) is not None
+    scheduling_context = (
+        _SCHEDULING_ACTION_RE.search(text) is not None
+    )
+
+    if (
+        side_workflow
+        and not (
+            required
+            and scheduling_context
+        )
+    ):
+        return TurnMeaning(
+            response_expectation=ResponseExpectation.YES_NO,
+            workflow_relation=WorkflowRelation.NONE,
+            question_kind=QuestionKind.WORKFLOW_PERMISSION,
+            workflow_direction=WorkflowDirection.CONTINUE,
+            topic="side workflow",
+            requested_facts=(),
+            conversation_end_requested=end_requested,
+        )
+
+    # --------------------------------------------------------------
+    # 5. Explicit workflow-permission grammar.
     # --------------------------------------------------------------
     if _PERMISSION_RE.search(text) is not None:
         direction = (
@@ -517,7 +609,10 @@ def deterministic_turn_meaning(
     # --------------------------------------------------------------
     # 4. High-confidence supported patient-fact requests.
     # --------------------------------------------------------------
-    facts = _requested_facts(text)
+    if _DECLARATIVE_NAME_REQUEST_RE.search(text) is not None:
+        facts = ("name",)
+    else:
+        facts = _requested_facts(text)
 
     if facts:
         return TurnMeaning(
@@ -547,5 +642,10 @@ def deterministic_turn_meaning(
             conversation_end_requested=True,
         )
 
-    # Everything else remains an LLM responsibility.
+    # Non-actionable greeting / legal / language-selection
+    # speech belongs in history but does not require a patient reply.
+    if _NON_ACTIONABLE_RE.search(text) is not None:
+        return TurnMeaning()
+
+    # Everything genuinely unknown remains an LLM responsibility.
     return None
