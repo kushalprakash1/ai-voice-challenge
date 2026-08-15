@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import json
 import re
+import struct
+import sys
 import wave
-from collections.abc import Mapping
+from array import array
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -17,6 +20,8 @@ from pathlib import Path
 from threading import RLock
 from time import monotonic
 from typing import Self
+
+import soundfile as sf  # type: ignore[import-untyped]
 
 from voiceprobe.scenarios.models import PatientScenario
 
@@ -106,12 +111,14 @@ class RunArtifactRecorder:
         root: Path | str,
         scenario: PatientScenario,
         run_id: str | None = None,
+        clock: Callable[[], float] = monotonic,
     ) -> None:
         self._lock = RLock()
+        self._clock = clock
 
         self._scenario = scenario
         self._started_at = _utc_now()
-        self._started_monotonic = monotonic()
+        self._started_monotonic = self._clock()
 
         self.run_id = run_id or self._generate_run_id(scenario.scenario_id)
 
@@ -136,6 +143,8 @@ class RunArtifactRecorder:
 
         self._inbound_path = self.run_dir / "inbound.wav"
         self._outbound_path = self.run_dir / "outbound.wav"
+        self._call_wav_path = self.run_dir / "call.wav"
+        self._call_ogg_path = self.run_dir / "call.ogg"
 
         self._inbound_wave = _open_pcm16_wave(self._inbound_path)
         self._outbound_wave = _open_pcm16_wave(self._outbound_path)
@@ -145,6 +154,11 @@ class RunArtifactRecorder:
 
         self._inbound_bytes = 0
         self._outbound_bytes = 0
+
+        # Signed 32-bit-style Python integers accumulate both directions on
+        # one absolute 8 kHz sample timeline. Clipping happens only when the
+        # public listening artifacts are materialized at finalization.
+        self._timeline_samples: list[int] = []
 
         self._finalized = False
 
@@ -184,7 +198,7 @@ class RunArtifactRecorder:
     def elapsed_seconds(self) -> float:
         return max(
             0.0,
-            monotonic() - self._started_monotonic,
+            self._clock() - self._started_monotonic,
         )
 
     def record_event(
@@ -309,17 +323,94 @@ class RunArtifactRecorder:
         if not payload:
             return
 
+        frame_sample_count = len(payload) // AUDIO_SAMPLE_WIDTH_BYTES
+
         with self._lock:
             self._ensure_open()
+
+            elapsed_sample = max(
+                0,
+                round(self.elapsed_seconds * AUDIO_SAMPLE_RATE_HZ),
+            )
+
+            if direction == "inbound":
+                # AudioSocket delivers a frame after those samples were
+                # captured, so place the frame immediately before its receive
+                # timestamp.
+                timeline_start_sample = max(
+                    0,
+                    elapsed_sample - frame_sample_count,
+                )
+            elif direction == "outbound":
+                # Outbound frames are recorded immediately after sendall()
+                # succeeds. That timestamp therefore represents the beginning
+                # of telephony playback for this frame.
+                timeline_start_sample = elapsed_sample
+            else:
+                raise ValueError(f"Unknown audio direction: {direction}")
 
             writer.writeframesraw(payload)
 
             if direction == "inbound":
                 self._inbound_bytes += len(payload)
-            elif direction == "outbound":
-                self._outbound_bytes += len(payload)
             else:
-                raise ValueError(f"Unknown audio direction: {direction}")
+                self._outbound_bytes += len(payload)
+
+            self._mix_pcm16_into_timeline(
+                payload=payload,
+                start_sample=timeline_start_sample,
+            )
+
+    def _mix_pcm16_into_timeline(
+        self,
+        *,
+        payload: bytes,
+        start_sample: int,
+    ) -> None:
+        """Mix little-endian PCM16 into the shared absolute call timeline."""
+        frame_sample_count = len(payload) // AUDIO_SAMPLE_WIDTH_BYTES
+        required_samples = start_sample + frame_sample_count
+
+        if required_samples > len(self._timeline_samples):
+            self._timeline_samples.extend(
+                [0] * (required_samples - len(self._timeline_samples))
+            )
+
+        for offset, (sample,) in enumerate(struct.iter_unpack("<h", payload)):
+            self._timeline_samples[start_sample + offset] += sample
+
+    def _materialize_call_audio(self) -> None:
+        """Write one aligned mixed WAV and one listenable OGG artifact."""
+        mixed = array(
+            "h",
+            (
+                max(
+                    -32_768,
+                    min(32_767, sample),
+                )
+                for sample in self._timeline_samples
+            ),
+        )
+
+        wav_samples = array("h", mixed)
+
+        if sys.byteorder != "little":
+            wav_samples.byteswap()
+
+        call_wave = _open_pcm16_wave(self._call_wav_path)
+
+        try:
+            call_wave.writeframes(wav_samples.tobytes())
+        finally:
+            call_wave.close()
+
+        sf.write(
+            self._call_ogg_path,
+            mixed,
+            AUDIO_SAMPLE_RATE_HZ,
+            format="OGG",
+            subtype="VORBIS",
+        )
 
     def finalize(
         self,
@@ -362,6 +453,8 @@ class RunArtifactRecorder:
                 },
             )
 
+            self._materialize_call_audio()
+
             self._inbound_wave.close()
             self._outbound_wave.close()
             self._events_file.close()
@@ -396,6 +489,11 @@ class RunArtifactRecorder:
                 6,
             ),
         }
+
+        summary["call_audio_seconds"] = round(
+            len(self._timeline_samples) / AUDIO_SAMPLE_RATE_HZ,
+            6,
+        )
 
         for key in _SUMMARY_TIMING_KEYS:
             values: list[float] = []
@@ -512,6 +610,8 @@ class RunArtifactRecorder:
                 "metrics": "metrics.json",
                 "inbound_audio": "inbound.wav",
                 "outbound_audio": "outbound.wav",
+                "call_audio": "call.wav",
+                "call_audio_ogg": "call.ogg",
             },
         }
 

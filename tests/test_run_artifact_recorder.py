@@ -76,6 +76,8 @@ def test_recorder_materializes_private_run_artifacts(
         "metrics.json",
         "inbound.wav",
         "outbound.wav",
+        "call.wav",
+        "call.ogg",
     }
 
     assert {path.name for path in recorder.run_dir.iterdir()} == expected
