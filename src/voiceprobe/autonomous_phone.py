@@ -1,0 +1,523 @@
+"""Autonomous half-duplex VoiceProbe phone diagnostic.
+
+Inbound PSTN audio:
+AudioSocket -> Moonshine -> TurnAssembler -> PatientSession
+
+Outbound patient audio:
+PatientSession -> Kokoro -> 8 kHz PCM16 -> AudioSocket
+
+This diagnostic intentionally ignores inbound audio while the simulated
+patient is reasoning or speaking. Full-duplex/barge-in comes later.
+"""
+
+from __future__ import annotations
+
+import argparse
+import queue
+import socket
+import threading
+import time
+import uuid
+from collections.abc import Sequence
+from time import perf_counter
+
+import httpx
+import numpy as np
+from kokoro import KPipeline
+
+from voiceprobe.agents.brain import PatientBrain
+from voiceprobe.conversation.session import PatientSession
+from voiceprobe.conversation.turns import CompletedTurn
+from voiceprobe.interpreters.ollama import OllamaConversationInterpreter
+from voiceprobe.media.live_asr import (
+    AUDIO_SAMPLE_RATE_HZ,
+    TYPE_DTMF,
+    TYPE_HANGUP,
+    TYPE_PCM_8KHZ,
+    TYPE_UUID,
+    build_transcriber,
+    pcm16_to_float32,
+    recv_exact,
+)
+from voiceprobe.scenarios.models import PatientFacts, PatientScenario
+from voiceprobe.tts.telephony import (
+    FRAME_DURATION_SECONDS,
+    build_audiosocket_packet,
+    float_audio_to_pcm16,
+    iter_pcm_frames,
+    normalize_text_for_tts,
+    resample_to_telephony,
+)
+from voiceprobe.verbalizers.ollama import OllamaNaturalVerbalizer
+
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 9019
+
+DEFAULT_MODEL = "qwen3:14b"
+DEFAULT_OLLAMA_URL = "http://10.0.0.219:11434/api/chat"
+
+DEFAULT_VOICE = "af_heart"
+
+ECHO_GUARD_SECONDS = 0.35
+
+
+def build_scenario() -> PatientScenario:
+    """Patient truth used for the first autonomous phone diagnostic."""
+    return PatientScenario(
+        scenario_id="autonomous-phone-diagnostic",
+        objective="Schedule an appointment for Friday afternoon.",
+        facts=PatientFacts(
+            name="Alex Morgan",
+            complaint="right shoulder pain",
+            duration="five days",
+            date_of_birth="April 12, 1998",
+            insurance="Blue Cross",
+            preferred_day="Friday",
+            preferred_time="afternoon",
+        ),
+    )
+
+
+def synthesize(
+    *,
+    pipeline: KPipeline,
+    voice: str,
+    text: str,
+) -> np.ndarray:
+    """Generate one complete Kokoro utterance."""
+    pieces: list[np.ndarray] = []
+
+    for _, _, audio in pipeline(
+        text,
+        voice=voice,
+        speed=1.0,
+    ):
+        pieces.append(
+            np.asarray(
+                audio,
+                dtype=np.float32,
+            )
+        )
+
+    if not pieces:
+        raise RuntimeError("Kokoro generated no audio.")
+
+    return np.concatenate(pieces)
+
+
+def send_audio(
+    connection: socket.socket,
+    pcm16: bytes,
+) -> None:
+    """Send one patient response at telephony playback cadence."""
+    next_deadline = time.monotonic()
+
+    for frame in iter_pcm_frames(pcm16):
+        connection.sendall(build_audiosocket_packet(frame))
+
+        next_deadline += FRAME_DURATION_SECONDS
+
+        delay = next_deadline - time.monotonic()
+
+        if delay > 0:
+            time.sleep(delay)
+
+
+def process_turns(
+    *,
+    turns: queue.Queue[CompletedTurn | None],
+    connection: socket.socket,
+    session: PatientSession,
+    pipeline: KPipeline,
+    voice: str,
+    busy: threading.Event,
+    stop: threading.Event,
+) -> None:
+    """Process complete ASR turns sequentially."""
+    while True:
+        turn = turns.get()
+
+        try:
+            if turn is None:
+                return
+
+            if stop.is_set():
+                return
+
+            print()
+            print("=" * 72)
+            print(f"ASR TURN: {turn.text}")
+            print("=" * 72)
+
+            reasoning_started = perf_counter()
+
+            result = session.handle_agent_turn(turn.text)
+
+            reasoning_seconds = perf_counter() - reasoning_started
+
+            print(f"PATIENT TEXT: {result.patient_text}")
+            print(f"DECISION:     {result.decision.kind.value}")
+
+            if result.progress.objective_complete:
+                print()
+                print("*** APPOINTMENT OBJECTIVE COMPLETE ***")
+
+            if stop.is_set():
+                print(
+                    "[CALL ENDED] Skipping TTS for completed turn.",
+                    flush=True,
+                )
+                return
+
+            tts_started = perf_counter()
+
+            tts_text = normalize_text_for_tts(result.patient_text)
+
+            if tts_text != result.patient_text:
+                print(
+                    f"TTS TEXT:     {tts_text}",
+                    flush=True,
+                )
+
+            audio_24k = synthesize(
+                pipeline=pipeline,
+                voice=voice,
+                text=tts_text,
+            )
+
+            tts_seconds = perf_counter() - tts_started
+
+            audio_8k = resample_to_telephony(audio_24k)
+
+            pcm16 = float_audio_to_pcm16(audio_8k)
+
+            audio_seconds = len(audio_8k) / 8_000
+
+            response_prep_seconds = time.monotonic() - turn.completed_at
+
+            print()
+            endpoint_and_queue_seconds = max(
+                0.0,
+                response_prep_seconds - reasoning_seconds - tts_seconds,
+            )
+
+            print(f"Interpreter:    {result.timings.interpreter_seconds:.3f}s")
+            print(f"Brain/ground:   {result.timings.decision_seconds:.3f}s")
+            print(f"Verbalizer:     {result.timings.verbalizer_seconds:.3f}s")
+            print(f"State update:   {result.timings.state_update_seconds:.3f}s")
+            print(f"Reasoning:      {reasoning_seconds:.3f}s")
+            print(f"TTS:            {tts_seconds:.3f}s")
+            print(f"Endpoint/queue: {endpoint_and_queue_seconds:.3f}s")
+            print(f"Response prep:  {response_prep_seconds:.3f}s")
+            print(f"Speech length:  {audio_seconds:.3f}s")
+            if stop.is_set():
+                print(
+                    "[CALL ENDED] Skipping audio playback.",
+                    flush=True,
+                )
+                return
+
+            print("Speaking...")
+
+            send_audio(
+                connection,
+                pcm16,
+            )
+
+            print("Speech complete.")
+
+            # Keep inbound ASR muted briefly after playback so PSTN echo
+            # does not immediately become the next receptionist turn.
+            time.sleep(ECHO_GUARD_SECONDS)
+
+        except (
+            httpx.HTTPError,
+            BrokenPipeError,
+            ConnectionError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as error:
+            print()
+            print(f"TURN ERROR: {type(error).__name__}: {error}")
+
+        finally:
+            if turn is not None:
+                busy.clear()
+
+            turns.task_done()
+
+
+def handle_call(
+    *,
+    connection: socket.socket,
+    session: PatientSession,
+    pipeline: KPipeline,
+    voice: str,
+) -> None:
+    """Run one autonomous half-duplex AudioSocket call."""
+    turn_queue: queue.Queue[CompletedTurn | None] = queue.Queue()
+
+    busy = threading.Event()
+    stop = threading.Event()
+
+    def prefetch_candidate(
+        candidate_text: str,
+    ) -> None:
+        if stop.is_set() or busy.is_set():
+            return
+
+        started = session.prefetch_agent_turn(candidate_text)
+
+        if started:
+            print(
+                f"[PREFETCH START] {candidate_text!r}",
+                flush=True,
+            )
+
+    def invalidate_candidate() -> None:
+        session.invalidate_prefetch()
+
+    def enqueue_turn(
+        turn: CompletedTurn,
+    ) -> None:
+        # Claim the half-duplex response window immediately. This closes
+        # the race between Moonshine completing a turn and the worker
+        # beginning inference.
+        if stop.is_set():
+            return
+
+        if busy.is_set():
+            print(f"[HALF-DUPLEX] Dropping overlapping turn: {turn.text!r}")
+            return
+
+        busy.set()
+        turn_queue.put_nowait(turn)
+
+    transcriber, listener = build_transcriber(
+        on_turn=enqueue_turn,
+        on_candidate=prefetch_candidate,
+        on_speech_activity=invalidate_candidate,
+    )
+
+    worker = threading.Thread(
+        target=process_turns,
+        kwargs={
+            "turns": turn_queue,
+            "connection": connection,
+            "session": session,
+            "pipeline": pipeline,
+            "voice": voice,
+            "busy": busy,
+            "stop": stop,
+        },
+        daemon=True,
+    )
+
+    call_id: uuid.UUID | None = None
+
+    transcriber.start()
+    worker.start()
+
+    try:
+        while True:
+            header = recv_exact(
+                connection,
+                3,
+            )
+
+            if header is None:
+                print("AudioSocket disconnected.")
+                return
+
+            message_type = header[0]
+            payload_length = int.from_bytes(
+                header[1:3],
+                "big",
+            )
+
+            payload = recv_exact(
+                connection,
+                payload_length,
+            )
+
+            if payload is None:
+                print("AudioSocket disconnected during payload.")
+                return
+
+            if message_type == TYPE_HANGUP:
+                print("Call ended.")
+                return
+
+            if message_type == TYPE_UUID:
+                if len(payload) == 16:
+                    call_id = uuid.UUID(bytes=payload)
+                    print(f"Call UUID: {call_id}")
+
+                continue
+
+            if message_type == TYPE_DTMF:
+                digit = payload.decode(
+                    "ascii",
+                    errors="replace",
+                )
+                print(f"DTMF: {digit}")
+                continue
+
+            if message_type != TYPE_PCM_8KHZ:
+                continue
+
+            # First diagnostic is intentionally half-duplex. Audio
+            # received while VoiceProbe is reasoning/speaking is consumed
+            # from AudioSocket but never sent to Moonshine.
+            if busy.is_set():
+                continue
+
+            audio = pcm16_to_float32(payload)
+
+            transcriber.add_audio(
+                audio,
+                AUDIO_SAMPLE_RATE_HZ,
+            )
+
+    finally:
+        stop.set()
+        session.invalidate_prefetch()
+
+        transcriber.stop()
+        listener.close()
+
+        turn_queue.put(None)
+
+        worker.join(
+            timeout=5.0,
+        )
+
+        transcriber.close()
+
+        print(f"Autonomous call complete: call_id={call_id}")
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--host",
+        default=DEFAULT_HOST,
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+    )
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+    )
+    parser.add_argument(
+        "--url",
+        default=DEFAULT_OLLAMA_URL,
+    )
+    parser.add_argument(
+        "--voice",
+        default=DEFAULT_VOICE,
+    )
+
+    return parser
+
+
+def main(
+    argv: Sequence[str] | None = None,
+) -> int:
+    args = _build_parser().parse_args(argv)
+
+    print("Loading Moonshine...")
+    # build_transcriber() is intentionally called inside handle_call so
+    # its listener can be bound to that call's turn queue.
+
+    print("Loading Kokoro...")
+
+    kokoro_started = perf_counter()
+
+    pipeline = KPipeline(
+        lang_code="a",
+        repo_id="hexgrad/Kokoro-82M",
+    )
+
+    print(f"Kokoro loaded in {perf_counter() - kokoro_started:.3f}s")
+
+    print(f"Warming voice {args.voice}...")
+
+    warm_started = perf_counter()
+
+    synthesize(
+        pipeline=pipeline,
+        voice=args.voice,
+        text="Hello.",
+    )
+
+    print(f"Kokoro warm-up complete in {perf_counter() - warm_started:.3f}s")
+
+    scenario = build_scenario()
+
+    with httpx.Client(
+        timeout=20.0,
+    ) as client:
+        interpreter = OllamaConversationInterpreter(
+            model=args.model,
+            url=args.url,
+            client=client,
+        )
+
+        verbalizer = OllamaNaturalVerbalizer(
+            model=args.model,
+            url=args.url,
+            client=client,
+        )
+
+        session = PatientSession(
+            scenario=scenario,
+            interpreter=interpreter,
+            verbalizer=verbalizer,
+            brain=PatientBrain(),
+        )
+
+        with socket.socket(
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+        ) as server:
+            server.setsockopt(
+                socket.SOL_SOCKET,
+                socket.SO_REUSEADDR,
+                1,
+            )
+
+            server.bind(
+                (
+                    args.host,
+                    args.port,
+                )
+            )
+            server.listen(1)
+
+            print()
+            print(f"VoiceProbe autonomous phone listening on {args.host}:{args.port}")
+            print("Waiting for one Asterisk call...")
+
+            connection, address = server.accept()
+
+            with connection:
+                print(f"Asterisk connected from {address}")
+
+                handle_call(
+                    connection=connection,
+                    session=session,
+                    pipeline=pipeline,
+                    voice=args.voice,
+                )
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

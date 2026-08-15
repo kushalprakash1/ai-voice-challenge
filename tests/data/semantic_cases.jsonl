@@ -1,0 +1,30 @@
+{"case_id":"insurance_direct","utterance":"What insurance do you have?","expected_requested_facts":["insurance"]}
+{"case_id":"insurance_indirect","utterance":"Who are you covered through?","expected_requested_facts":["insurance"]}
+{"case_id":"insurance_carrier","utterance":"Which insurance carrier are you with?","expected_requested_facts":["insurance"]}
+{"case_id":"complaint_direct","utterance":"What seems to be bothering you?","expected_requested_facts":["complaint"]}
+{"case_id":"complaint_indirect","utterance":"Can you remind me what brought you in today?","expected_requested_facts":["complaint"]}
+{"case_id":"complaint_reason","utterance":"What are you calling about today?","expected_requested_facts":["complaint"]}
+{"case_id":"duration_direct","utterance":"How long has this been going on?","expected_requested_facts":["duration"]}
+{"case_id":"duration_indirect","utterance":"When did this start?","expected_requested_facts":["duration"]}
+{"case_id":"name_direct","utterance":"Can I get your full name?","expected_requested_facts":["name"]}
+{"case_id":"name_indirect","utterance":"Who am I speaking with?","expected_requested_facts":["name"]}
+{"case_id":"dob_direct","utterance":"What is your date of birth?","expected_requested_facts":["date_of_birth"]}
+{"case_id":"dob_verify","utterance":"Can you verify your birthday for me?","expected_requested_facts":["date_of_birth"]}
+{"case_id":"schedule_both","utterance":"What day and time would work best for you?","expected_requested_facts":["preferred_day","preferred_time"]}
+{"case_id":"schedule_day","utterance":"Which day works best for you?","expected_requested_facts":["preferred_day"]}
+{"case_id":"schedule_time","utterance":"Would you prefer morning or afternoon?","expected_requested_facts":["preferred_time"]}
+{"case_id":"offer_concrete","utterance":"I've got Friday at 2:30 PM available.","expected_appointment_offer":{"day":"Friday","time":"2:30 PM"}}
+{"case_id":"offer_question","utterance":"Would Friday at 3:00 PM work for you?","expected_appointment_offer":{"day":"Friday","time":"3:00 PM"}}
+{"case_id":"offer_day_only","utterance":"I have an opening on Friday.","expected_appointment_offer":{"day":"Friday","time":null}}
+{"case_id":"booking_confirmed","utterance":"Perfect, you're booked for Friday at 2:30 PM.","expected_appointment_offer":{"day":"Friday","time":"2:30 PM"},"expected_booking_confirmed":true}
+{"case_id":"offer_not_confirmation","utterance":"Friday at 2:30 PM is available if you want it.","expected_appointment_offer":{"day":"Friday","time":"2:30 PM"},"expected_booking_confirmed":false}
+{"case_id":"wrong_complaint_duration","utterance":"So your left knee has been hurting for two weeks, right?","expected_requested_facts":["complaint","duration"],"expected_stated_fact_keys":["complaint","duration"],"expected_conflicts":["complaint","duration"]}
+{"case_id":"wrong_complaint","utterance":"And it's your left knee that's bothering you, correct?","expected_requested_facts":["complaint"],"expected_stated_fact_keys":["complaint"],"expected_conflicts":["complaint"]}
+{"case_id":"wrong_duration","utterance":"You said this started two weeks ago, right?","expected_requested_facts":["duration"],"expected_stated_fact_keys":["duration"],"expected_conflicts":["duration"]}
+{"case_id":"correct_claims","utterance":"So it's right shoulder pain and it's been five days, correct?","expected_requested_facts":["complaint","duration"],"expected_stated_fact_keys":["complaint","duration"],"expected_conflicts":[]}
+{"case_id":"repeat_direct","utterance":"Sorry, I didn't catch that. Could you repeat that?","expected_requests_repetition":true}
+{"case_id":"repeat_indirect","utterance":"I'm sorry, what was that again?","expected_requests_repetition":true}
+{"case_id":"unclear_gibberish","utterance":"Florp zindle uh brakka something.","expected_unclear":true}
+{"case_id":"multi_identity","utterance":"Can I get your name and date of birth?","expected_requested_facts":["name","date_of_birth"]}
+{"case_id":"multi_identity_insurance","utterance":"What's your name, and who is your insurance through?","expected_requested_facts":["name","insurance"]}
+{"case_id":"confirm_complaint","utterance":"You said right shoulder pain, correct?","expected_requested_facts":["complaint"],"expected_stated_fact_keys":["complaint"],"expected_conflicts":[]}
