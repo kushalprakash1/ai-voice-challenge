@@ -17,6 +17,7 @@ from voiceprobe.reasoning.action_plan import (
     PatientActionKind,
 )
 from voiceprobe.reasoning.turn_frame import (
+    PresentedChoice,
     RequestedAction,
     RequestedFact,
     SlotOption,
@@ -82,6 +83,88 @@ def _option_value(
 
     if field == "appointment_type":
         return option.appointment_type
+
+    return None
+
+
+def _presented_choice_value(
+    *,
+    choice: PresentedChoice,
+    field: str,
+) -> str | None:
+    # Recover only explicit, source-grounded constraints from the choice label.
+    # This never uses patient preferences to fill missing choice data.
+
+    label = " ".join(
+        choice.label.casefold().split()
+    )
+
+    if field == "day":
+        if choice.day is not None:
+            return choice.day
+
+        if any(
+            phrase in label
+            for phrase in (
+                "another day",
+                "other day",
+                "different day",
+            )
+        ):
+            return "another day"
+
+        weekdays = (
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        )
+
+        label_tokens = set(
+            label.replace(",", " ")
+            .replace(".", " ")
+            .replace("?", " ")
+            .split()
+        )
+
+        for weekday in weekdays:
+            if weekday in label_tokens:
+                return weekday.capitalize()
+
+        return None
+
+    if field == "time":
+        if choice.time is not None:
+            return choice.time
+
+        if choice.daypart is not None:
+            return choice.daypart
+
+        label_tokens = set(
+            label.replace(",", " ")
+            .replace(".", " ")
+            .replace("?", " ")
+            .split()
+        )
+
+        for daypart in (
+            "morning",
+            "afternoon",
+            "evening",
+        ):
+            if daypart in label_tokens:
+                return daypart
+
+        return None
+
+    if field == "provider":
+        return choice.provider
+
+    if field == "appointment_type":
+        return choice.appointment_type
 
     return None
 
@@ -160,6 +243,45 @@ class ConstraintValidator:
             compatible
         )
 
+    def compatible_presented_choice_indices(
+        self,
+        *,
+        world: PatientWorldModel,
+        turn: TurnFrame,
+    ) -> tuple[int, ...]:
+        if (
+            turn.requested_action
+            is not RequestedAction.CHOOSE_PRESENTED_CHOICE
+        ):
+            return ()
+
+        compatible: list[int] = []
+
+        for index in range(
+            len(turn.presented_choices)
+        ):
+            probe = ActionPlan(
+                action=PatientActionKind.SELECT_PRESENTED_CHOICE,
+                selected_choice_index=index,
+                reason_code="presented_choice_compatibility_probe",
+                confidence=1.0,
+            )
+
+            violations = self.validate(
+                world=world,
+                turn=turn,
+                plan=probe,
+            )
+
+            if not violations:
+                compatible.append(
+                    index
+                )
+
+        return tuple(
+            compatible
+        )
+
     def validate(
         self,
         *,
@@ -190,6 +312,17 @@ class ConstraintValidator:
             is PatientActionKind.SELECT_OPTION
         ):
             self._validate_selected_option(
+                world=world,
+                turn=turn,
+                plan=plan,
+                violations=violations,
+            )
+
+        if (
+            plan.action
+            is PatientActionKind.SELECT_PRESENTED_CHOICE
+        ):
+            self._validate_selected_presented_choice(
                 world=world,
                 turn=turn,
                 plan=plan,
@@ -296,6 +429,42 @@ class ConstraintValidator:
                     detail=(
                         "Caller may select an appointment option only "
                         "when the remote turn actually requests a choice."
+                    ),
+                )
+            )
+
+        if (
+            turn.requested_action
+            is RequestedAction.CHOOSE_PRESENTED_CHOICE
+            and action
+            not in {
+                PatientActionKind.SELECT_PRESENTED_CHOICE,
+                PatientActionKind.REQUEST_ALTERNATIVE,
+                PatientActionKind.CLARIFY,
+            }
+        ):
+            violations.append(
+                ConstraintViolation(
+                    code="presented_choice_requires_explicit_choice_action",
+                    detail=(
+                        "General choice requires a specific compatible branch, "
+                        "an alternative request, or clarification."
+                    ),
+                )
+            )
+
+        if (
+            action
+            is PatientActionKind.SELECT_PRESENTED_CHOICE
+            and turn.requested_action
+            is not RequestedAction.CHOOSE_PRESENTED_CHOICE
+        ):
+            violations.append(
+                ConstraintViolation(
+                    code="presented_selection_without_choice_request",
+                    detail=(
+                        "Caller may select a presented branch only when "
+                        "the remote turn requests that general choice."
                     ),
                 )
             )
@@ -491,6 +660,68 @@ class ConstraintValidator:
                             f"{constraint.field!r} candidate "
                             f"{candidate!r} conflicts with required "
                             f"value {constraint.value!r}."
+                        ),
+                    )
+                )
+
+    @staticmethod
+    def _validate_selected_presented_choice(
+        *,
+        world: PatientWorldModel,
+        turn: TurnFrame,
+        plan: ActionPlan,
+        violations: list[ConstraintViolation],
+    ) -> None:
+        index = plan.selected_choice_index
+
+        if index is None:
+            return
+
+        if index >= len(
+            turn.presented_choices
+        ):
+            violations.append(
+                ConstraintViolation(
+                    code="presented_choice_index_out_of_range",
+                    detail=(
+                        f"Presented choice index {index} does not exist."
+                    ),
+                )
+            )
+            return
+
+        choice = turn.presented_choices[
+            index
+        ]
+
+        for constraint in world.constraints:
+            if (
+                constraint.strength
+                is not ConstraintStrength.HARD
+            ):
+                continue
+
+            candidate = _presented_choice_value(
+                choice=choice,
+                field=constraint.field,
+            )
+
+            # Missing search detail may be carried forward by the caller.
+            if candidate is None:
+                continue
+
+            if not _matches_constraint(
+                constraint=constraint,
+                candidate=candidate,
+            ):
+                violations.append(
+                    ConstraintViolation(
+                        code="hard_constraint_conflict",
+                        detail=(
+                            f"Presented choice {index} explicitly sets "
+                            f"{constraint.field!r} to {candidate!r}, "
+                            f"conflicting with required value "
+                            f"{constraint.value!r}."
                         ),
                     )
                 )

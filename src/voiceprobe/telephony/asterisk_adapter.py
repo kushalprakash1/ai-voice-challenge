@@ -691,8 +691,16 @@ class AsteriskAssessmentCallAdapter:
                         failure_reason=failure_reason,
                     )
         finally:
-            interpreter.close()
-            verbalizer.close()
+            # Reasoning v2 owns and closes its semantic/planner components.
+            # Legacy mode still owns the separate interpreter/verbalizer.
+            if isinstance(
+                session,
+                ReasoningV2PatientSession,
+            ):
+                session.close()
+            else:
+                interpreter.close()
+                verbalizer.close()
 
     def _ensure_runtime(
         self,

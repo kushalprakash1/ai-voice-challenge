@@ -164,6 +164,9 @@ _ACTION_TO_COMMUNICATION = {
 
     "select_option": CommunicationKind.ACCEPT_OFFER,
 
+    # General/search branch selection is not a concrete slot acceptance.
+    "select_presented_choice": CommunicationKind.ANSWER,
+
     "request_alternative": CommunicationKind.DECLINE_OFFER,
     "reject_confirmation": CommunicationKind.DECLINE_OFFER,
 
@@ -310,6 +313,7 @@ def _facts_communicated(
     if action in {
         "state_objective",
         "request_alternative",
+        "select_presented_choice",
     }:
         if world.facts.get(
             "preferred_day"
@@ -447,6 +451,7 @@ def _advance_progress(
     if action in {
         "state_objective",
         "request_alternative",
+        "select_presented_choice",
     }:
         day_shared = (
             world.facts.get(

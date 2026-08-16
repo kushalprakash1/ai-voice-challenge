@@ -36,6 +36,7 @@ class PatientActionKind(StrEnum):
     DECLINE_PERMISSION = "decline_permission"
 
     SELECT_OPTION = "select_option"
+    SELECT_PRESENTED_CHOICE = "select_presented_choice"
     REQUEST_ALTERNATIVE = "request_alternative"
 
     CONFIRM = "confirm"
@@ -59,6 +60,11 @@ class ActionPlan(BaseModel):
 
     # Zero-based index into TurnFrame.appointment_options.
     selected_option_index: int | None = Field(
+        default=None,
+        ge=0,
+    )
+
+    selected_choice_index: int | None = Field(
         default=None,
         ge=0,
     )
@@ -88,9 +94,32 @@ class ActionPlan(BaseModel):
                 raise ValueError(
                     "SELECT_OPTION requires selected_option_index."
                 )
-        elif self.selected_option_index is not None:
+
+            if self.selected_choice_index is not None:
+                raise ValueError(
+                    "SELECT_OPTION cannot set selected_choice_index."
+                )
+
+        elif (
+            self.action
+            is PatientActionKind.SELECT_PRESENTED_CHOICE
+        ):
+            if self.selected_choice_index is None:
+                raise ValueError(
+                    "SELECT_PRESENTED_CHOICE requires selected_choice_index."
+                )
+
+            if self.selected_option_index is not None:
+                raise ValueError(
+                    "SELECT_PRESENTED_CHOICE cannot set selected_option_index."
+                )
+
+        elif (
+            self.selected_option_index is not None
+            or self.selected_choice_index is not None
+        ):
             raise ValueError(
-                "Only SELECT_OPTION may set selected_option_index."
+                "Only selection actions may set a selection index."
             )
 
         if (

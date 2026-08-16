@@ -161,6 +161,13 @@ class GenericActionVerbalizer:
                 plan=plan,
             )
 
+        if action is PatientActionKind.SELECT_PRESENTED_CHOICE:
+            return self._selected_presented_choice_text(
+                world=world,
+                turn=turn,
+                plan=plan,
+            )
+
         if action is PatientActionKind.REQUEST_ALTERNATIVE:
             return self._alternative_text(
                 world
@@ -560,6 +567,141 @@ class GenericActionVerbalizer:
 
         raise ValueError(
             "Selected appointment option has no usable scheduling detail."
+        )
+
+    @staticmethod
+    def _selected_presented_choice_text(
+        *,
+        world: PatientWorldModel,
+        turn: TurnFrame,
+        plan: ActionPlan,
+    ) -> str:
+        index = plan.selected_choice_index
+
+        if index is None:
+            raise ValueError(
+                "SELECT_PRESENTED_CHOICE has no choice index."
+            )
+
+        if index >= len(
+            turn.presented_choices
+        ):
+            raise ValueError(
+                "SELECT_PRESENTED_CHOICE index is outside presented choices."
+            )
+
+        choice = turn.presented_choices[
+            index
+        ]
+
+        if choice.kind.value == "search_availability":
+            constraints = {
+                item.field: item.value
+                for item in world.constraints
+                if (
+                    item.strength
+                    is ConstraintStrength.HARD
+                )
+            }
+
+            search_time = (
+                choice.time
+                or choice.daypart
+                or constraints.get("time")
+            )
+
+            # Prefer structured fields, but recover a weekday from the
+            # source-grounded choice label when Qwen leaves choice.day null.
+            # This mirrors the deterministic validator's source recovery and
+            # never invents a day from patient preference.
+            source_label = " ".join(
+                choice.label.casefold().split()
+            )
+
+            source_tokens = set(
+                source_label.replace(",", " ")
+                .replace(".", " ")
+                .replace("?", " ")
+                .split()
+            )
+
+            recovered_day: str | None = None
+
+            for weekday in (
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+                "sunday",
+            ):
+                if weekday in source_tokens:
+                    recovered_day = weekday.capitalize()
+                    break
+
+            explicit_day = (
+                choice.day
+                if choice.day is not None
+                else recovered_day
+            )
+
+            if (
+                explicit_day is not None
+                and choice.date_text is not None
+            ):
+                when = (
+                    f"{explicit_day}, "
+                    f"{choice.date_text}"
+                )
+            elif choice.date_text is not None:
+                when = choice.date_text
+            elif explicit_day is not None:
+                when = explicit_day
+            else:
+                when = constraints.get(
+                    "day"
+                )
+
+            if (
+                when is not None
+                and search_time is not None
+            ):
+                return (
+                    f"Please check {when} for "
+                    f"{search_time} appointments."
+                )
+
+            if when is not None:
+                return (
+                    f"Please check {when} for appointments."
+                )
+
+            if search_time is not None:
+                return (
+                    f"Please check for {search_time} appointments."
+                )
+
+        label = choice.label.rstrip(
+            ".?!"
+        )
+
+        if label.casefold().startswith(
+            (
+                "check ",
+                "look ",
+                "search ",
+                "continue ",
+                "create ",
+                "verify ",
+            )
+        ):
+            return (
+                f"Please {label}."
+            )
+
+        return (
+            f"I'd like to {label}."
         )
 
     @staticmethod

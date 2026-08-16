@@ -72,8 +72,11 @@ class RequestedAction(StrEnum):
     # Permission to perform an action such as checking availability.
     GRANT_PERMISSION = "grant_permission"
 
-    # Choose from concrete alternatives.
+    # Choose from concrete appointment-slot alternatives.
     CHOOSE_OPTION = "choose_option"
+
+    # Choose among non-booking conversational/search alternatives.
+    CHOOSE_PRESENTED_CHOICE = "choose_presented_choice"
 
     # Confirm or reject a proposition.
     CONFIRM = "confirm"
@@ -163,6 +166,50 @@ class AgentFactAssertion(BaseModel):
     )
 
 
+class ChoiceKind(StrEnum):
+    """Semantic category for a non-booking choice presented by the agent."""
+
+    SEARCH_AVAILABILITY = "search_availability"
+    WORKFLOW = "workflow"
+    OTHER = "other"
+
+
+class PresentedChoice(BaseModel):
+    """One explicit non-booking alternative presented by the remote agent."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+
+    label: str = Field(
+        min_length=1,
+    )
+    kind: ChoiceKind
+
+    day: str | None = None
+    date_text: str | None = None
+    time: str | None = None
+    daypart: str | None = None
+    provider: str | None = None
+    appointment_type: str | None = None
+
+    @model_validator(mode="after")
+    def normalize_label(
+        self,
+    ) -> Self:
+        label = " ".join(
+            self.label.split()
+        )
+
+        if not label:
+            raise ValueError(
+                "PresentedChoice.label cannot be blank."
+            )
+
+        self.label = label
+        return self
+
+
 class SlotOption(BaseModel):
     """One appointment option explicitly communicated by the agent."""
 
@@ -220,6 +267,11 @@ class TurnFrame(BaseModel):
     proposed_workflow: WorkflowProposal | None = None
 
     appointment_options: list[SlotOption] = Field(
+        default_factory=list,
+    )
+
+    # Explicit alternatives that are not concrete appointment slots.
+    presented_choices: list[PresentedChoice] = Field(
         default_factory=list,
     )
 
@@ -288,6 +340,20 @@ class TurnFrame(BaseModel):
             if not self.appointment_options:
                 raise ValueError(
                     "CHOOSE_OPTION requires concrete options."
+                )
+
+        if (
+            self.requested_action
+            is RequestedAction.CHOOSE_PRESENTED_CHOICE
+        ):
+            if not self.response_required:
+                raise ValueError(
+                    "CHOOSE_PRESENTED_CHOICE must require a caller response."
+                )
+
+            if not self.presented_choices:
+                raise ValueError(
+                    "CHOOSE_PRESENTED_CHOICE requires presented choices."
                 )
 
         if self.requested_action in {

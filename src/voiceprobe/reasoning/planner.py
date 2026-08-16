@@ -128,6 +128,22 @@ A profile or identity setup workflow for the same service can reasonably
 enable a later transaction even when it is not itself the caller's final
 objective.
 
+GENERAL PRESENTED CHOICES
+
+Some remote questions present search/workflow alternatives rather than
+concrete appointment slots.
+
+For requested_action = "choose_presented_choice":
+
+- choose only from remote_turn.presented_choices
+- preserve every HARD caller constraint
+- reject explicitly conflicting branches
+- a branch may omit a constraint because the caller can carry it forward
+- never invent a branch
+- do not answer with generic "yes"
+
+Use action = "select_presented_choice" with selected_choice_index.
+
 OPTION SELECTION
 
 If requested_action is "choose_option":
@@ -593,6 +609,34 @@ class QwenPatientPlanner:
                 reason_code="semantic_objective_request",
                 confidence=turn.confidence,
             )
+
+        if (
+            turn.requested_action
+            is RequestedAction.CHOOSE_PRESENTED_CHOICE
+        ):
+            compatible = (
+                self.validator.compatible_presented_choice_indices(
+                    world=world,
+                    turn=turn,
+                )
+            )
+
+            if not compatible:
+                return ActionPlan(
+                    action=PatientActionKind.REQUEST_ALTERNATIVE,
+                    reason_code="no_compatible_presented_choice",
+                    confidence=1.0,
+                )
+
+            if len(compatible) == 1:
+                return ActionPlan(
+                    action=PatientActionKind.SELECT_PRESENTED_CHOICE,
+                    selected_choice_index=compatible[0],
+                    reason_code="only_compatible_presented_choice",
+                    confidence=1.0,
+                )
+
+            return None
 
         if (
             turn.requested_action

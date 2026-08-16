@@ -386,6 +386,52 @@ scheduling context establishes it unambiguously.
 Never invent a missing slot.
 
 
+GENERAL PRESENTED CHOICES
+
+The remote agent may ask the caller to choose between actions, searches,
+workflow branches, or other alternatives that are NOT concrete bookable
+appointment slots.
+
+Example:
+
+"There are no Friday afternoon openings on August 21st.
+Would you like to look at afternoon options on another day,
+or check the following Friday, August 28th?"
+
+Use:
+
+requested_action = "choose_presented_choice"
+response_required = true
+appointment_options = []
+
+presented_choices = [
+  {
+    "label": "look at afternoon options on another day",
+    "kind": "search_availability",
+    "day": "another day",
+    "date_text": null,
+    "time": null,
+    "daypart": "afternoon",
+    "provider": null,
+    "appointment_type": null
+  },
+  {
+    "label": "check the following Friday, August 28th",
+    "kind": "search_availability",
+    "day": "Friday",
+    "date_text": "August 28th",
+    "time": null,
+    "daypart": null,
+    "provider": null,
+    "appointment_type": null
+  }
+]
+
+Do not use patient preferences to populate presented_choices.
+Do not decide which branch is best in the semantic layer.
+Concrete booking-slot choices remain requested_action = "choose_option".
+If alternatives are merely informational, do not manufacture a choice.
+
 SEMANTIC ONTOLOGY BOUNDARIES
 
 Keep these categories strictly separate.
