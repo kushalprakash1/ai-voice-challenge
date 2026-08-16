@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from .flow_state import FlowSnapshot
 from .models import DecisionKind, PolicyDecision
+from .flow_controller import SchedulingFlowController
 from .runtime import (
     FallbackResolver,
     RuntimeDecision,
@@ -155,6 +156,7 @@ class PipecatRuntimeBridge:
         tts_frame_factory: Callable[[str], Any] | None = None,
         fallback_resolver: FallbackResolver | object = _DEFAULT_V31_FALLBACK,
         semantic_router: V31SemanticRouter | None = None,
+        flow_controller: SchedulingFlowController | None = None,
     ) -> None:
         config.validate()
 
@@ -185,6 +187,7 @@ class PipecatRuntimeBridge:
         self._tts_frame_factory = tts_frame_factory or _default_tts_frame_factory
 
         self._runtime = VoiceProbeV3Runtime(
+            flow_controller=flow_controller,
             fallback_resolver=resolved_fallback,
             on_decision=self._on_runtime_decision,
             continuation_grace_ms=config.continuation_grace_ms,

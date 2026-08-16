@@ -38,6 +38,13 @@ from voiceprobe.scenarios.catalog import get_scenario, list_scenarios
 from voiceprobe.suite import build_suite_plan
 from voiceprobe.telephony.ami import AsteriskAMIConfig
 from voiceprobe.telephony.asterisk_adapter import AsteriskAssessmentCallAdapter
+from voiceprobe.v3.personas import (
+    ENV_PERSONA,
+    ENV_PERSONA_SEED,
+    ENV_PERSONA_SEQUENCE,
+    list_personas,
+    sequence_ids_for,
+)
 
 DEFAULT_AMI_ENV = Path.home() / ".config/voiceprobe/ami.env"
 DEFAULT_MAX_PROVIDER_RATE_PER_MINUTE_USD = Decimal("0.10")
@@ -254,6 +261,31 @@ def main() -> int:
         ),
     )
 
+
+    parser.add_argument(
+        "--persona",
+        choices=tuple(
+            persona.persona_id
+            for persona in list_personas()
+            if persona.persona_id != "control"
+        ),
+        default="",
+        help="Optional adversarial patient persona.",
+    )
+
+    parser.add_argument(
+        "--persona-sequence",
+        default="",
+        help="Explicit deterministic move sequence for --persona.",
+    )
+
+    parser.add_argument(
+        "--persona-seed",
+        type=int,
+        default=6,
+        help="Seed used when no explicit persona sequence is selected.",
+    )
+
     parser.add_argument(
         "--confirm",
         default="",
@@ -293,6 +325,26 @@ def main() -> int:
 
     if args.live_monitor and not args.live:
         parser.error("--live-monitor requires --live")
+
+    if args.persona_sequence and not args.persona:
+        parser.error("--persona-sequence requires --persona")
+
+    if args.persona:
+        available_sequences = sequence_ids_for(args.persona)
+
+        if (
+            args.persona_sequence
+            and args.persona_sequence not in available_sequences
+        ):
+            parser.error(
+                f"invalid --persona-sequence for {args.persona!r}; "
+                f"choices are: {', '.join(available_sequences)}"
+            )
+
+    # Prevent stale shell variables from silently modifying a baseline call.
+    os.environ[ENV_PERSONA] = args.persona
+    os.environ[ENV_PERSONA_SEQUENCE] = args.persona_sequence
+    os.environ[ENV_PERSONA_SEED] = str(args.persona_seed)
 
     # Keep monitoring explicitly opt-in for run_one. The actual media layer
     # reads this flag independently so the known-good adapter call signatures

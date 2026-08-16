@@ -45,6 +45,12 @@ from .audiosocket_kokoro import (
     KokoroTelephonyRenderer,
 )
 from .audiosocket_pipecat import build_audiosocket_flux_input_worker
+from .flow_controller import SchedulingFlowController
+from .personas import (
+    PersonaDecisionOverlay,
+    PersonaRuntime,
+    persona_runtime_from_environment,
+)
 from .flow_state import FlowSnapshot
 from .production import PipecatRuntimeBridge, build_production_flux_service
 
@@ -121,14 +127,76 @@ class _RecordingPipecatRuntimeBridge(PipecatRuntimeBridge):
         *,
         recorder: RunArtifactRecorder,
         tts_frame_factory: Callable[[str], Any] | None = None,
+        persona_runtime: PersonaRuntime | None = None,
     ) -> None:
         self._recorder = recorder
         self._decision_index = 0
-        super().__init__(tts_frame_factory=tts_frame_factory)
+        self._persona_runtime = persona_runtime
+        self._persona_event_cursor = 0
+        self._persona_final_recorded = False
+
+        flow_controller = None
+
+        if persona_runtime is not None:
+            flow_controller = SchedulingFlowController(
+                decision_overlay=PersonaDecisionOverlay(
+                    persona_runtime
+                )
+            )
+
+        super().__init__(
+            tts_frame_factory=tts_frame_factory,
+            flow_controller=flow_controller,
+        )
+
+        if persona_runtime is not None:
+            self._recorder.record_event(
+                "persona_configured",
+                **persona_runtime.configuration(),
+            )
+
+    def _flush_persona_events(self) -> None:
+        if self._persona_runtime is None:
+            return
+
+        events = self._persona_runtime.events
+
+        for event in events[self._persona_event_cursor:]:
+            self._recorder.record_event(
+                event.event_type,
+                persona_id=event.persona_id,
+                sequence_id=event.sequence_id,
+                move_number=event.move_number,
+                remote_turn=event.remote_turn,
+                output_text=event.output_text,
+                flow_stage=event.flow_stage,
+                state_effect=event.state_effect,
+                persona_turn_index=event.turn_index,
+            )
+
+        self._persona_event_cursor = len(events)
+
+    def record_persona_final_evidence(self) -> None:
+        if (
+            self._persona_runtime is None
+            or self._persona_final_recorded
+        ):
+            return
+
+        self._flush_persona_events()
+
+        self._recorder.record_event(
+            "persona_final_evidence",
+            **self._persona_runtime.evidence(),
+        )
+
+        self._persona_final_recorded = True
 
     async def _on_runtime_decision(self, result) -> None:
         self._decision_index += 1
         decision_index = self._decision_index
+
+        self._flush_persona_events()
 
         for ordinal, turn in enumerate(result.source_turns, start=1):
             self._recorder.record_transcript_turn(
@@ -213,10 +281,12 @@ class _AsyncV3Runtime:
         api_key: str,
         speech_task: AudioSocketKokoroSpeechTask,
         recorder: RunArtifactRecorder,
+        persona_runtime: PersonaRuntime | None = None,
     ) -> None:
         self._api_key = api_key
         self._speech_task = speech_task
         self._recorder = recorder
+        self._persona_runtime = persona_runtime
 
         self.connected = threading.Event()
         self.disconnected = threading.Event()
@@ -344,6 +414,16 @@ class _AsyncV3Runtime:
         )
         future.result(timeout=timeout)
 
+    def record_persona_final_evidence(self) -> None:
+        with self._lock:
+            bridge = self._bridge
+
+        if isinstance(
+            bridge,
+            _RecordingPipecatRuntimeBridge,
+        ):
+            bridge.record_persona_final_evidence()
+
     def request_stop(self) -> None:
         self._stop_requested.set()
 
@@ -403,6 +483,7 @@ class _AsyncV3Runtime:
 
         bridge = _RecordingPipecatRuntimeBridge(
             recorder=self._recorder,
+            persona_runtime=self._persona_runtime,
         )
         bundle = build_audiosocket_flux_input_worker(
             stt_service=flux.service,
@@ -649,6 +730,10 @@ def execute_v3_asterisk_media(
 
     scenario = get_scenario(request.scenario_id)
 
+    # Validate persona configuration before opening the live-call boundary.
+    # Empty configuration preserves normal VoiceProbe behavior.
+    persona_runtime = persona_runtime_from_environment()
+
     with (
         LiveAudioMonitor.from_environment() as live_monitor,
         socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server,
@@ -850,6 +935,7 @@ def execute_v3_asterisk_media(
                                 api_key=api_key,
                                 speech_task=speech_task,
                                 recorder=recorder,
+                                persona_runtime=persona_runtime,
                             )
                             live_runtime.start()
                             recorder.record_event("v3_live_media_started")
@@ -891,6 +977,15 @@ def execute_v3_asterisk_media(
                     except BaseException as error:
                         recorder.record_event(
                             "v3_final_flush_error",
+                            error_type=type(error).__name__,
+                            error_message=str(error),
+                        )
+
+                    try:
+                        live_runtime.record_persona_final_evidence()
+                    except BaseException as error:
+                        recorder.record_event(
+                            "persona_final_evidence_error",
                             error_type=type(error).__name__,
                             error_message=str(error),
                         )
