@@ -228,6 +228,12 @@ class SchedulingFlowTracker:
             if reason == "dob_correction":
                 self._communicate(FlowStage.DOB)
 
+        elif kind == DecisionKind.CONTEXTUAL_ANSWER:
+            # Conversational speech with deliberately zero durable flow
+            # mutation. Used by v3.2 for grounded explanations such as
+            # why an existing appointment needs to be moved.
+            pass
+
         elif kind == DecisionKind.CORRECT_AND_STATE_OBJECTIVE:
             self._communicate(
                 FlowStage.DOB,

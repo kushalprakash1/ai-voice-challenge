@@ -15,6 +15,7 @@ class DecisionKind(StrEnum):
     ANSWER_VISIT_DETAILS = "answer_visit_details"
     ANSWER_COMPLAINT = "answer_complaint"
     ANSWER_PROVIDER_PREFERENCE = "answer_provider_preference"
+    CONTEXTUAL_ANSWER = "contextual_answer"
     CORRECT_AND_STATE_OBJECTIVE = "correct_and_state_objective"
     GRANT_PERMISSION = "grant_permission"
     CHOOSE_SEARCH_BRANCH = "choose_search_branch"
