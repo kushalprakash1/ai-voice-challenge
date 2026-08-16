@@ -33,6 +33,11 @@ class Operation(StrEnum):
 class Focus(StrEnum):
     NONE = "none"
 
+    # Why the patient is seeking medical care / why the visit exists.
+    # This is distinct from WHY an already-existing appointment is moved.
+    VISIT_REASON = "visit_reason"
+
+    # Why an existing appointment is being changed.
     RESCHEDULE_REASON = "reschedule_reason"
 
     INSURANCE = "insurance"

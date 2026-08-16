@@ -130,3 +130,66 @@ def test_invalid_model_object_fails_closed():
         route_semantic_frame(trace.frame).route
         is SemanticRoute.UNKNOWN
     )
+
+
+
+def test_visit_reason_and_reschedule_reason_are_distinct():
+    """Reason for care and reason for changing a visit are different intents."""
+
+    visit = parse({
+        "speech_act": "ask",
+        "operation": "none",
+        "focus": "visit_reason",
+        "commitment": "informational",
+        "certainty": "high",
+    })
+
+    visit_route = route_semantic_frame(
+        visit.frame
+    )
+
+    assert visit_route.route is SemanticRoute.ANSWER_FACT
+    assert visit_route.fact_focus.value == "complaint"
+
+    reschedule = parse({
+        "speech_act": "ask",
+        "operation": "reschedule",
+        "focus": "reschedule_reason",
+        "commitment": "informational",
+        "certainty": "high",
+    })
+
+    assert (
+        route_semantic_frame(reschedule.frame).route
+        is SemanticRoute.ANSWER_RESCHEDULE_REASON
+    )
+
+
+def test_visit_reason_never_becomes_transaction_gate():
+    trace = parse({
+        "speech_act": "ask",
+        "operation": "none",
+        "focus": "visit_reason",
+        "commitment": "informational",
+        "certainty": "high",
+    })
+
+    routed = route_semantic_frame(trace.frame)
+
+    assert routed.route is SemanticRoute.ANSWER_FACT
+    assert routed.fact_focus.value == "complaint"
+
+
+def test_reschedule_reason_remains_non_transactional():
+    trace = parse({
+        "speech_act": "ask",
+        "operation": "reschedule",
+        "focus": "reschedule_reason",
+        "commitment": "informational",
+        "certainty": "high",
+    })
+
+    assert (
+        route_semantic_frame(trace.frame).route
+        is SemanticRoute.ANSWER_RESCHEDULE_REASON
+    )

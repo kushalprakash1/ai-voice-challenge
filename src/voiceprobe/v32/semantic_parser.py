@@ -74,7 +74,22 @@ choose_provider describes provider selection.
 Use none when no operation is being discussed.
 
 focus:
-reschedule_reason means WHY an appointment is being moved.
+visit_reason means WHY the patient is seeking care or why the medical visit
+exists. This includes questions asking the purpose/reason for the visit or
+appointment when no change/reschedule operation is being discussed.
+
+reschedule_reason means WHY an EXISTING appointment is being changed,
+moved, or rescheduled.
+
+These concepts are mutually distinct:
+
+- reason the patient needs medical care -> visit_reason
+- reason the patient is changing an existing appointment -> reschedule_reason
+
+Do not infer reschedule_reason merely because the broader conversation has
+previously involved scheduling or rescheduling. The latest utterance must
+actually concern why the appointment is being changed.
+
 insurance means insurance carrier/plan.
 provider_preference means which provider/provider availability the patient wants.
 dob/name/complaint/preferred_day/preferred_time are literal patient facts.
@@ -92,14 +107,38 @@ none means commitment is irrelevant.
 
 IMPORTANT CONTRAST:
 
-"What made you want to change it?"
-is informational discussion about reschedule_reason.
-It is NOT transaction permission.
+A reason-for-care question and a reason-for-change question are different.
 
-"Should I go ahead and book it?"
-is a permission_request for operation=book.
+Clinic asks why the patient needs the visit:
+focus=visit_reason
+commitment=informational
+
+Clinic asks why the patient is moving/rescheduling an existing visit:
+focus=reschedule_reason
+commitment=informational
+
+A reason-for-change question is still NOT transaction permission.
+
+Only asking whether the clinic may actually book, cancel, keep, or
+reschedule the appointment is a permission_request.
 
 CALIBRATION EXAMPLES
+
+Clinic: "Why does the patient need this visit?"
+Frame:
+speech_act=ask
+operation=none
+focus=visit_reason
+commitment=informational
+certainty=high
+
+Clinic: "What is this appointment for?"
+Frame:
+speech_act=ask
+operation=none
+focus=visit_reason
+commitment=informational
+certainty=high
 
 Clinic: "What's making you reschedule?"
 Frame:

@@ -97,6 +97,21 @@ def route_semantic_frame(
             SemanticRoute.WAIT
         )
 
+    # The semantic topic "visit_reason" describes WHY the patient
+    # is seeking care. The authoritative value comes from PatientFacts.complaint,
+    # so translate semantic focus -> authoritative fact focus here.
+    if (
+        frame.focus is Focus.VISIT_REASON
+        and frame.speech_act in {
+            SpeechAct.ASK,
+            SpeechAct.REQUEST,
+        }
+    ):
+        return RoutedSemanticTurn(
+            SemanticRoute.ANSWER_FACT,
+            fact_focus=Focus.COMPLAINT,
+        )
+
     # Informational WHY-reschedule questions.
     if (
         frame.focus is Focus.RESCHEDULE_REASON
