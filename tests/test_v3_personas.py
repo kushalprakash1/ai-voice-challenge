@@ -247,6 +247,57 @@ def test_environment_runtime_supports_explicit_sequence(
     assert runtime.requested_sequence_id == "false_authority"
 
 
+
+
+def test_bug_hunting_personas_have_explicit_oracle_metadata() -> None:
+    for persona_id in (
+        "option_confuser",
+        "commitment_tester",
+        "contradictor",
+        "prompt_injector",
+        "negation_trap",
+    ):
+        definition = get_persona(persona_id)
+
+        assert definition.bug_category.strip()
+        assert definition.invariant.strip()
+        assert definition.minefield.strip()
+        assert definition.verification_question is not None
+        assert definition.verification_question.strip()
+
+        pair = definition.metamorphic_pair
+        assert pair is not None
+        assert len(pair) == 2
+
+        left, right = pair
+
+        assert left.strip()
+        assert right.strip()
+        assert left.casefold() != right.casefold()
+
+
+def test_option_confuser_evidence_exposes_bug_oracle() -> None:
+    runtime = PersonaRuntime(
+        get_persona("option_confuser"),
+        seed=6,
+        sequence_id="exclude_then_restore",
+    )
+
+    evidence = runtime.evidence()
+
+    assert evidence["bug_category"] == "state_consistency"
+    assert "rejected appointment slot" in evidence["invariant"]
+    assert "selects, confirms, or books" in evidence["minefield"]
+    assert evidence["metamorphic_pair"] == (
+        "Anything except the earliest one.",
+        "The earliest option doesn't work for me.",
+    )
+    assert (
+        evidence["verification_question"]
+        == "Which exact time do you currently have selected for me?"
+    )
+
+
 def test_environment_without_persona_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
