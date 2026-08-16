@@ -86,3 +86,103 @@ def test_adapter_v3_environment_switch_is_explicit(monkeypatch) -> None:
     monkeypatch.setenv("VOICEPROBE_V3_LIVE", "definitely")
     with pytest.raises(ValueError):
         v3_live_enabled_from_environment()
+
+
+def test_recording_bridge_persists_remote_and_patient_turns() -> None:
+    import asyncio
+
+    from voiceprobe.v3.asterisk_live import _RecordingPipecatRuntimeBridge
+
+    class Recorder:
+        def __init__(self) -> None:
+            self.transcript = []
+            self.events = []
+            self.metrics = []
+
+        def record_transcript_turn(self, *, speaker, text, **metadata) -> None:
+            self.transcript.append((speaker, text, metadata))
+
+        def record_event(self, event, **details) -> None:
+            self.events.append((event, details))
+
+        def record_turn_metrics(self, metrics) -> None:
+            self.metrics.append(dict(metrics))
+
+    class Sink:
+        def __init__(self) -> None:
+            self.frames = []
+
+        async def queue_frames(self, frames) -> None:
+            self.frames.extend(frames)
+
+    recorder = Recorder()
+    sink = Sink()
+    bridge = _RecordingPipecatRuntimeBridge(
+        recorder=recorder,
+        tts_frame_factory=lambda text: ("tts", text),
+    )
+    bridge.bind_frame_sink(sink)
+
+    result = asyncio.run(
+        bridge.runtime.process_turns(
+            ["What insurance do you have?"],
+            ingress_reason="test_flux_eot",
+        )
+    )
+
+    assert result.response_ready
+    assert recorder.transcript[0][0] == "agent"
+    assert recorder.transcript[0][1] == "What insurance do you have?"
+    assert recorder.transcript[0][2]["source"] == "deepgram_flux_eot"
+
+    assert recorder.transcript[1][0] == "patient"
+    assert "Blue Cross" in recorder.transcript[1][1]
+    assert recorder.transcript[1][2]["delivery_status"] == "queued_for_tts"
+
+    assert sink.frames == [("tts", result.decision.text)]
+    assert recorder.events[-1][0] == "v3_runtime_decision"
+    assert recorder.events[-1][1]["decision_kind"] == result.decision.kind.value
+    assert recorder.metrics[-1]["decision_kind"] == result.decision.kind.value
+    assert recorder.metrics[-1]["response_ready"] is True
+
+
+def test_recording_bridge_persists_wait_turn_without_patient_speech() -> None:
+    import asyncio
+
+    from voiceprobe.v3.asterisk_live import _RecordingPipecatRuntimeBridge
+
+    class Recorder:
+        def __init__(self) -> None:
+            self.transcript = []
+            self.events = []
+            self.metrics = []
+
+        def record_transcript_turn(self, *, speaker, text, **metadata) -> None:
+            self.transcript.append((speaker, text, metadata))
+
+        def record_event(self, event, **details) -> None:
+            self.events.append((event, details))
+
+        def record_turn_metrics(self, metrics) -> None:
+            self.metrics.append(dict(metrics))
+
+    recorder = Recorder()
+    bridge = _RecordingPipecatRuntimeBridge(
+        recorder=recorder,
+        tts_frame_factory=lambda text: ("tts", text),
+    )
+
+    result = asyncio.run(
+        bridge.runtime.process_turns(
+            ["Thanks."],
+            ingress_reason="test_flux_eot",
+        )
+    )
+
+    assert not result.response_ready
+    assert [(speaker, text) for speaker, text, _ in recorder.transcript] == [
+        ("agent", "Thanks.")
+    ]
+    assert recorder.events[-1][0] == "v3_runtime_decision"
+    assert recorder.metrics[-1]["decision_kind"] == "wait"
+    assert recorder.metrics[-1]["response_ready"] is False

@@ -105,6 +105,103 @@ class _LocalMediaStop(Exception):
     """Internal control-flow signal used to poll async v3 state from recv()."""
 
 
+class _RecordingPipecatRuntimeBridge(PipecatRuntimeBridge):
+    """Persist every v3 runtime decision into the existing run artifacts.
+
+    Remote text is a Deepgram Flux EndOfTurn transcript. Patient text is
+    recorded only after the response has been successfully queued to the
+    AudioSocket/Kokoro speech sink. The later ``v3_audio_sent`` event remains
+    the authoritative proof that PCM was actually handed to AudioSocket.
+    """
+
+    def __init__(
+        self,
+        *,
+        recorder: RunArtifactRecorder,
+        tts_frame_factory: Callable[[str], Any] | None = None,
+    ) -> None:
+        self._recorder = recorder
+        self._decision_index = 0
+        super().__init__(tts_frame_factory=tts_frame_factory)
+
+    async def _on_runtime_decision(self, result) -> None:
+        self._decision_index += 1
+        decision_index = self._decision_index
+
+        for ordinal, turn in enumerate(result.source_turns, start=1):
+            self._recorder.record_transcript_turn(
+                speaker="agent",
+                text=turn,
+                source="deepgram_flux_eot",
+                v3_decision_index=decision_index,
+                source_turn_ordinal=ordinal,
+                ingress_reason=result.ingress_reason,
+            )
+
+        self._recorder.record_event(
+            "v3_runtime_decision",
+            decision_index=decision_index,
+            source_turns=list(result.source_turns),
+            actionable_turn=result.actionable_turn,
+            decision_kind=result.decision.kind.value,
+            decision_text=result.decision.text,
+            decision_reason=result.decision.reason,
+            route=result.route.value,
+            ingress_reason=result.ingress_reason,
+            policy_latency_ms=round(result.policy_latency_ms, 6),
+            requires_response=result.requires_response,
+            response_ready=result.response_ready,
+            before_stage=result.before.current_stage.value,
+            after_stage=result.after.current_stage.value,
+            objective_complete=result.after.complete,
+            accepted_slot_text=result.after.accepted_slot_text,
+            booking_confirmation_text=result.after.booking_confirmation_text,
+        )
+
+        try:
+            await super()._on_runtime_decision(result)
+        except BaseException as error:
+            self._recorder.record_event(
+                "v3_runtime_decision_delivery_error",
+                decision_index=decision_index,
+                decision_kind=result.decision.kind.value,
+                error_type=type(error).__name__,
+                error_message=str(error),
+            )
+            raise
+
+        if result.response_ready:
+            self._recorder.record_transcript_turn(
+                speaker="patient",
+                text=result.decision.text,
+                source="voiceprobe_v3",
+                delivery_status="queued_for_tts",
+                v3_decision_index=decision_index,
+                decision_kind=result.decision.kind.value,
+                decision_reason=result.decision.reason,
+                route=result.route.value,
+            )
+
+        self._recorder.record_turn_metrics(
+            {
+                "policy_latency_ms": round(result.policy_latency_ms, 6),
+                "ingress_reason": result.ingress_reason,
+                "route": result.route.value,
+                "decision_kind": result.decision.kind.value,
+                "decision_reason": result.decision.reason,
+                "requires_response": result.requires_response,
+                "response_ready": result.response_ready,
+                "source_turn_count": len(result.source_turns),
+                "objective_complete": result.after.complete,
+                "current_stage": result.after.current_stage.value,
+                "accepted_slot_text": result.after.accepted_slot_text,
+                "booking_confirmation_text": (
+                    result.after.booking_confirmation_text
+                ),
+            }
+        )
+
+
 class _AsyncV3Runtime:
     """Own one Pipecat WorkerRunner and expose thread-safe PCM submission."""
 
@@ -302,7 +399,9 @@ class _AsyncV3Runtime:
             self.disconnected.set()
             self._recorder.record_event("v3_flux_disconnected")
 
-        bridge = PipecatRuntimeBridge()
+        bridge = _RecordingPipecatRuntimeBridge(
+            recorder=self._recorder,
+        )
         bundle = build_audiosocket_flux_input_worker(
             stt_service=flux.service,
             bridge=bridge,
