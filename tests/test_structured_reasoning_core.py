@@ -725,3 +725,270 @@ def test_source_grounding_keeps_supported_dob_assertion() -> None:
         grounded.stated_facts[0].fact.value
         == "date_of_birth"
     )
+
+
+def test_booking_confirmed_requires_confirmed_appointment() -> None:
+    """A booking claim without a structured booked slot is incomplete."""
+
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(
+        ValidationError
+    ):
+        TurnFrame.model_validate(
+            {
+                "speech_act": "information",
+                "workflow": "scheduling",
+                "requested_action": "none",
+                "response_required": False,
+                "requested_facts": [],
+                "other_requested_facts": [],
+                "stated_facts": [],
+                "proposed_workflow": None,
+                "appointment_options": [],
+                "confirmed_appointment": None,
+                "booking_confirmed": True,
+                "conversation_end_requested": False,
+                "agent_is_still_working": False,
+                "confidence": 1.0,
+            }
+        )
+
+
+def test_semantic_booking_payload_is_repaired_from_current_source() -> None:
+    """Explicit booking speech overrides an incomplete model slot."""
+
+    import json
+
+    import httpx
+
+    from voiceprobe.reasoning.semantic_reasoner import (
+        StructuredTurnReasoner,
+    )
+
+    calls = 0
+
+    model_payload = {
+        "speech_act": "confirmation",
+        "workflow": "scheduling",
+        "requested_action": "none",
+        "response_required": False,
+        "requested_facts": [],
+        "other_requested_facts": [],
+        "stated_facts": [],
+        "proposed_workflow": None,
+        "appointment_options": [],
+        "confirmed_appointment": None,
+        "booking_confirmed": True,
+        "conversation_end_requested": False,
+        "agent_is_still_working": False,
+        "confidence": 1.0,
+    }
+
+    def handler(
+        request: httpx.Request,
+    ) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "content": json.dumps(
+                        model_payload
+                    )
+                }
+            },
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            handler
+        )
+    )
+
+    reasoner = StructuredTurnReasoner(
+        model="qwen3:14b",
+        url="http://ollama.test/api/chat",
+        client=client,
+    )
+
+    try:
+        frame = reasoner.interpret(
+            agent_turn=(
+                "Okay, you're booked for Friday at 4.30 p.m."
+            ),
+            recent_history=(
+                "Friday.",
+            ),
+        )
+    finally:
+        reasoner.close()
+        client.close()
+
+    # Deterministic provenance repair should avoid another LLM call.
+    assert calls == 1
+
+    assert frame.booking_confirmed is True
+    assert frame.confirmed_appointment is not None
+    assert frame.confirmed_appointment.day == "Friday"
+    assert frame.confirmed_appointment.time == "4:30 PM"
+
+
+def test_semantic_booking_source_overrides_hallucinated_slot() -> None:
+    """Model-generated slot values cannot override explicit remote speech."""
+
+    from voiceprobe.reasoning.semantic_reasoner import (
+        source_repair_semantic_payload,
+    )
+
+    payload = {
+        "speech_act": "confirmation",
+        "workflow": "scheduling",
+        "requested_action": "none",
+        "response_required": False,
+        "requested_facts": [],
+        "other_requested_facts": [],
+        "stated_facts": [],
+        "proposed_workflow": None,
+        "appointment_options": [],
+        "confirmed_appointment": {
+            "day": "Friday",
+            "date_text": None,
+            "time": "9:45 AM",
+            "daypart": None,
+            "provider": "Becker",
+            "appointment_type": None,
+        },
+        "booking_confirmed": True,
+        "conversation_end_requested": False,
+        "agent_is_still_working": False,
+        "confidence": 1.0,
+    }
+
+    repaired = source_repair_semantic_payload(
+        payload=payload,
+        agent_turn=(
+            "Okay, you're booked for Friday at 4.30 p.m."
+        ),
+        recent_history=(
+            "Friday.",
+        ),
+    )
+
+    slot = repaired[
+        "confirmed_appointment"
+    ]
+
+    assert slot[
+        "day"
+    ] == "Friday"
+
+    assert slot[
+        "time"
+    ] == "4:30 PM"
+
+    # Becker was not stated anywhere in the supplied speech.
+    assert slot[
+        "provider"
+    ] is None
+
+
+
+def test_booking_confirmation_does_not_leak_into_later_goodbye() -> None:
+    """Recent booking history cannot make a goodbye another confirmation."""
+
+    from voiceprobe.reasoning.semantic_reasoner import (
+        source_repair_semantic_payload,
+    )
+
+    payload = {
+        "speech_act": "goodbye",
+        "workflow": "scheduling",
+        "requested_action": "none",
+        "response_required": False,
+        "requested_facts": [],
+        "other_requested_facts": [],
+        "stated_facts": [],
+        "proposed_workflow": None,
+        "appointment_options": [],
+        "confirmed_appointment": {
+            "day": "Friday",
+            "date_text": None,
+            "time": None,
+            "daypart": None,
+            "provider": None,
+            "appointment_type": None,
+        },
+        "booking_confirmed": True,
+        "conversation_end_requested": True,
+        "agent_is_still_working": False,
+        "confidence": 1.0,
+    }
+
+    repaired = source_repair_semantic_payload(
+        payload=payload,
+        agent_turn="Okay, bye.",
+        recent_history=(
+            "Okay, you're booked for Friday at 4.30 p.m.",
+        ),
+    )
+
+    assert repaired[
+        "booking_confirmed"
+    ] is False
+
+    assert repaired[
+        "confirmed_appointment"
+    ] is None
+
+
+def test_elliptical_current_confirmation_can_inherit_recent_slot() -> None:
+    """A real current confirmation may use immediately relevant slot context."""
+
+    from voiceprobe.reasoning.semantic_reasoner import (
+        source_repair_semantic_payload,
+    )
+
+    payload = {
+        "speech_act": "confirmation",
+        "workflow": "scheduling",
+        "requested_action": "none",
+        "response_required": False,
+        "requested_facts": [],
+        "other_requested_facts": [],
+        "stated_facts": [],
+        "proposed_workflow": None,
+        "appointment_options": [],
+        "confirmed_appointment": None,
+        "booking_confirmed": True,
+        "conversation_end_requested": False,
+        "agent_is_still_working": False,
+        "confidence": 1.0,
+    }
+
+    repaired = source_repair_semantic_payload(
+        payload=payload,
+        agent_turn="You're all set.",
+        recent_history=(
+            "Friday at 4.30 p.m.",
+        ),
+    )
+
+    assert repaired[
+        "booking_confirmed"
+    ] is True
+
+    slot = repaired[
+        "confirmed_appointment"
+    ]
+
+    assert slot is not None
+    assert slot[
+        "day"
+    ] == "Friday"
+    assert slot[
+        "time"
+    ] == "4:30 PM"

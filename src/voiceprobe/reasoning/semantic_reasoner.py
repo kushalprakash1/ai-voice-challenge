@@ -301,6 +301,91 @@ Use other_requested_facts only when the requested fact genuinely does not fit
 the canonical RequestedFact enum.
 
 
+SPLIT / ELLIPTICAL APPOINTMENT OFFERS
+
+A remote agent may communicate one appointment option across multiple
+consecutive turns.
+
+Example:
+
+recent_agent_history:
+"How about 4:30 PM?"
+
+latest_agent_turn:
+"Friday."
+
+If the latest turn clearly supplies a missing component of the immediately
+preceding appointment offer or choice request, treat it as a CONTINUATION
+of that same offer.
+
+Merge only information that is safely established by the relevant recent
+offer.
+
+For the example above:
+
+requested_action = "choose_option"
+response_required = true
+
+appointment_options = [
+  {
+    "day": "Friday",
+    "time": "4:30 PM"
+  }
+]
+
+Do NOT classify the completing fragment as a passive requested_action="none"
+merely because the latest utterance is short.
+
+The same rule applies when the pieces are reversed:
+
+recent_agent_history:
+"How about Friday?"
+
+latest_agent_turn:
+"At 4:30 PM."
+
+The result is one Friday 4:30 PM appointment option.
+
+IMPORTANT:
+
+Only inherit from an immediately relevant scheduling offer.
+
+Do NOT combine unrelated dates, times, providers, or appointment details
+from distant conversation history.
+
+
+BOOKING CONFIRMATION COMPLETENESS
+
+If booking_confirmed = true, confirmed_appointment MUST identify the
+confirmed slot.
+
+Example:
+
+latest_agent_turn:
+"Okay, you're booked for Friday at 4:30 PM."
+
+Use:
+
+booking_confirmed = true
+
+confirmed_appointment = {
+  "day": "Friday",
+  "time": "4:30 PM"
+}
+
+Do not return booking_confirmed=true with confirmed_appointment=null when
+the booked slot is present in the latest utterance.
+
+If the confirmation is elliptical, such as:
+
+"You're all set."
+
+a confirmed slot may be inherited only when the immediately relevant recent
+scheduling context establishes it unambiguously.
+
+Never invent a missing slot.
+
+
 SEMANTIC ONTOLOGY BOUNDARIES
 
 Keep these categories strictly separate.
@@ -601,6 +686,11 @@ _ORDINAL_SUFFIX_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
+_MERIDIEM_PUNCT_RE = re.compile(
+    r"\b([ap])\s*\.?\s*m\.?(?=\s|$|[,.!?;:])",
+    flags=re.IGNORECASE,
+)
+
 _NON_ALNUM_RE = re.compile(
     r"[^a-z0-9]+",
 )
@@ -629,6 +719,13 @@ def _normalize_evidence_text(
 
     text = _ORDINAL_SUFFIX_RE.sub(
         r"\1",
+        text,
+    )
+
+    # Canonicalize telephony meridiem variants before removing
+    # punctuation so "p.m." and "PM" both become "pm".
+    text = _MERIDIEM_PUNCT_RE.sub(
+        r"\1m",
         text,
     )
 
@@ -693,6 +790,420 @@ def _asserted_value_has_current_turn_evidence(
         token in source_tokens
         for token in tokens
     )
+
+
+_WEEKDAY_RE = re.compile(
+    r"\b("
+    r"monday|tuesday|wednesday|thursday|"
+    r"friday|saturday|sunday"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+
+_CLOCK_TIME_RE = re.compile(
+    r"""
+    \b
+    (?P<hour>1[0-2]|0?[1-9])
+    (?:
+        [:.]
+        (?P<minute>[0-5][0-9])
+    )?
+    \s*
+    (?P<meridiem>
+        a(?:\.?\s*m\.?)?
+        |
+        p(?:\.?\s*m\.?)?
+    )
+    (?=\s|$|[,.!?;:])
+    """,
+    flags=(
+        re.IGNORECASE
+        | re.VERBOSE
+    ),
+)
+
+
+def _extract_explicit_weekday(
+    text: str,
+) -> str | None:
+    match = _WEEKDAY_RE.search(
+        text
+    )
+
+    if match is None:
+        return None
+
+    return match.group(
+        1
+    ).capitalize()
+
+
+def _extract_explicit_clock_time(
+    text: str,
+) -> str | None:
+    """Extract an explicitly spoken 12-hour clock time.
+
+    Examples:
+
+    4.30 p.m. -> 4:30 PM
+    9:45 AM   -> 9:45 AM
+    4 PM      -> 4:00 PM
+    """
+
+    match = _CLOCK_TIME_RE.search(
+        text
+    )
+
+    if match is None:
+        return None
+
+    hour = int(
+        match.group(
+            "hour"
+        )
+    )
+
+    minute_text = match.group(
+        "minute"
+    )
+
+    minute = (
+        int(minute_text)
+        if minute_text is not None
+        else 0
+    )
+
+    raw_meridiem = (
+        match.group(
+            "meridiem"
+        )
+        .casefold()
+        .replace(
+            ".",
+            "",
+        )
+        .replace(
+            " ",
+            "",
+        )
+    )
+
+    meridiem = (
+        "PM"
+        if raw_meridiem.startswith(
+            "p"
+        )
+        else "AM"
+    )
+
+    return (
+        f"{hour}:{minute:02d} "
+        f"{meridiem}"
+    )
+
+
+def _slot_field_has_source_evidence(
+    *,
+    value: object,
+    agent_turn: str,
+    recent_history: Sequence[str],
+) -> bool:
+    """Check appointment-slot provenance against real remote speech.
+
+    Booking confirmations may inherit from nearby actual conversation
+    history, but never from system-prompt examples or model memory.
+    """
+
+    if _asserted_value_has_current_turn_evidence(
+        value=value,
+        agent_turn=agent_turn,
+    ):
+        return True
+
+    nearby_history = " ".join(
+        item
+        for item in recent_history[-2:]
+        if item.strip()
+    )
+
+    if not nearby_history:
+        return False
+
+    return _asserted_value_has_current_turn_evidence(
+        value=value,
+        agent_turn=nearby_history,
+    )
+
+
+_BOOKING_CONFIRMATION_RE = re.compile(
+    r"""
+    (?:
+        \b(?:you(?:'re| are)|your)\s+
+        (?:now\s+)?
+        (?:booked|scheduled|confirmed|book)\b
+    )
+    |
+    (?:
+        \bi\s+(?:have|'ve)\s+you\s+
+        (?:booked|scheduled)\b
+    )
+    |
+    (?:
+        \bappointment\s+
+        (?:is|has\s+been)\s+
+        (?:booked|scheduled|confirmed)\b
+    )
+    |
+    (?:
+        \b(?:booked|scheduled|confirmed)\s+for\b
+    )
+    |
+    (?:
+        \byou(?:'re| are)\s+all\s+set\b
+    )
+    """,
+    flags=(
+        re.IGNORECASE
+        | re.VERBOSE
+    ),
+)
+
+
+def _has_current_booking_confirmation_evidence(
+    agent_turn: str,
+) -> bool:
+    """Return whether THIS remote turn communicates booking completion.
+
+    booking_confirmed is a current-turn semantic event. Previous scheduling
+    history may fill details of an elliptical confirmation, but it cannot
+    manufacture a new confirmation on a later goodbye or acknowledgement.
+    """
+
+    return (
+        _BOOKING_CONFIRMATION_RE.search(
+            agent_turn
+        )
+        is not None
+    )
+
+
+def source_repair_semantic_payload(
+    *,
+    payload: object,
+    agent_turn: str,
+    recent_history: Sequence[str],
+) -> object:
+    """Apply deterministic provenance repair before TurnFrame validation.
+
+    Qwen proposes semantic structure. Explicit scheduling values in actual
+    remote speech are authoritative over model-generated slot values.
+
+    This is deliberately narrow: it repairs booking-confirmation provenance,
+    not patient truth or policy decisions.
+    """
+
+    if not isinstance(
+        payload,
+        dict,
+    ):
+        return payload
+
+    repaired = dict(
+        payload
+    )
+
+    if repaired.get(
+        "booking_confirmed"
+    ) is not True:
+        return repaired
+
+    # booking_confirmed is a semantic event in the CURRENT remote turn.
+    #
+    # Nearby history may later supply details for an elliptical current
+    # confirmation such as "You're all set", but history must never turn
+    # "Okay, bye" or another passive utterance into a new confirmation.
+    if not _has_current_booking_confirmation_evidence(
+        agent_turn
+    ):
+        repaired[
+            "booking_confirmed"
+        ] = False
+
+        repaired[
+            "confirmed_appointment"
+        ] = None
+
+        return repaired
+
+    raw_slot = repaired.get(
+        "confirmed_appointment"
+    )
+
+    if isinstance(
+        raw_slot,
+        dict,
+    ):
+        slot = dict(
+            raw_slot
+        )
+    else:
+        slot = {
+            "day": None,
+            "date_text": None,
+            "time": None,
+            "daypart": None,
+            "provider": None,
+            "appointment_type": None,
+        }
+
+    # Prefer values explicitly present in the CURRENT booking statement.
+    explicit_day = (
+        _extract_explicit_weekday(
+            agent_turn
+        )
+    )
+
+    explicit_time = (
+        _extract_explicit_clock_time(
+            agent_turn
+        )
+    )
+
+    if explicit_day is not None:
+        slot[
+            "day"
+        ] = explicit_day
+
+    if explicit_time is not None:
+        slot[
+            "time"
+        ] = explicit_time
+
+    # If the current confirmation is elliptical, nearby real conversation
+    # may safely supply a missing day/time.
+    nearby = " ".join(
+        [
+            *[
+                item
+                for item
+                in recent_history[-2:]
+                if item.strip()
+            ],
+            agent_turn,
+        ]
+    )
+
+    if slot.get(
+        "day"
+    ) is None:
+        inherited_day = (
+            _extract_explicit_weekday(
+                nearby
+            )
+        )
+
+        if inherited_day is not None:
+            slot[
+                "day"
+            ] = inherited_day
+
+    if slot.get(
+        "time"
+    ) is None:
+        inherited_time = (
+            _extract_explicit_clock_time(
+                nearby
+            )
+        )
+
+        if inherited_time is not None:
+            slot[
+                "time"
+            ] = inherited_time
+
+    # Remove model-added slot attributes that have no provenance in the
+    # actual remote speech.
+    for field in (
+        "date_text",
+        "daypart",
+        "provider",
+        "appointment_type",
+    ):
+        value = slot.get(
+            field
+        )
+
+        if value is None:
+            continue
+
+        if not _slot_field_has_source_evidence(
+            value=value,
+            agent_turn=agent_turn,
+            recent_history=recent_history,
+        ):
+            slot[
+                field
+            ] = None
+
+    # Day/time proposed by Qwen also need provenance if we were unable to
+    # replace them with explicit source values above.
+    if (
+        explicit_day is None
+        and slot.get(
+            "day"
+        ) is not None
+        and not _slot_field_has_source_evidence(
+            value=slot[
+                "day"
+            ],
+            agent_turn=agent_turn,
+            recent_history=recent_history,
+        )
+    ):
+        slot[
+            "day"
+        ] = None
+
+    if (
+        explicit_time is None
+        and slot.get(
+            "time"
+        ) is not None
+        and not _slot_field_has_source_evidence(
+            value=slot[
+                "time"
+            ],
+            agent_turn=agent_turn,
+            recent_history=recent_history,
+        )
+    ):
+        slot[
+            "time"
+        ] = None
+
+    if any(
+        slot.get(
+            field
+        )
+        is not None
+        for field in (
+            "day",
+            "date_text",
+            "time",
+            "daypart",
+            "provider",
+            "appointment_type",
+        )
+    ):
+        repaired[
+            "confirmed_appointment"
+        ] = slot
+    else:
+        repaired[
+            "confirmed_appointment"
+        ] = None
+
+    return repaired
 
 
 def source_ground_turn_frame(
@@ -851,9 +1362,32 @@ class StructuredTurnReasoner:
                 )
 
             try:
-                frame = TurnFrame.model_validate_json(
-                    content
-                )
+                try:
+                    raw_payload = json.loads(
+                        content
+                    )
+                except json.JSONDecodeError:
+                    # Preserve Pydantic's normal structured validation
+                    # behavior for malformed JSON.
+                    frame = TurnFrame.model_validate_json(
+                        content
+                    )
+                else:
+                    grounded_payload = (
+                        source_repair_semantic_payload(
+                            payload=raw_payload,
+                            agent_turn=normalized_turn,
+                            recent_history=(
+                                context[
+                                    "recent_agent_history"
+                                ]
+                            ),
+                        )
+                    )
+
+                    frame = TurnFrame.model_validate(
+                        grounded_payload
+                    )
 
                 return source_ground_turn_frame(
                     frame=frame,
@@ -875,18 +1409,45 @@ class StructuredTurnReasoner:
                     }
                 )
 
+                repair_guidance = (
+                    "Your previous structured output was invalid.\n\n"
+                    "Validation error:\n"
+                    f"{error}\n\n"
+                    "Repair the STRUCTURED INTERPRETATION, not the source "
+                    "meaning.\n\n"
+                    "Use only latest_agent_turn and recent_agent_history "
+                    "already supplied in this conversation.\n\n"
+                    "GENERAL REPAIR RULES:\n"
+                    "- Preserve fields that are clearly supported by the "
+                    "source.\n"
+                    "- Fix the field or dependent structure that caused the "
+                    "schema violation.\n"
+                    "- Do not erase a source-grounded semantic event merely "
+                    "to make validation pass.\n"
+                    "- Do not invent facts, options, dates, times, providers, "
+                    "or patient information.\n\n"
+                    "BOOKING CONFIRMATION REPAIR RULE:\n"
+                    "If the validation error says that "
+                    "booking_confirmed=true requires confirmed_appointment, "
+                    "re-read the source before repairing.\n"
+                    "If the remote agent clearly says the appointment IS "
+                    "booked/confirmed, KEEP booking_confirmed=true.\n"
+                    "Then populate confirmed_appointment from the booked slot "
+                    "that is explicitly stated in latest_agent_turn or "
+                    "unambiguously established by the immediately relevant "
+                    "recent scheduling context.\n"
+                    "Do NOT change booking_confirmed to false merely to "
+                    "satisfy the schema when the remote agent explicitly "
+                    "confirmed the booking.\n"
+                    "If no booked slot can actually be grounded in the "
+                    "supplied speech/history, do not invent one.\n\n"
+                    "Return a completely new schema-valid JSON result."
+                )
+
                 messages.append(
                     {
                         "role": "user",
-                        "content": (
-                            "Your previous structured output was invalid.\n\n"
-                            "Validation error:\n"
-                            f"{error}\n\n"
-                            "Correct the semantic interpretation using only "
-                            "the supplied agent speech/history. Do not invent "
-                            "missing facts or appointment options. Return a "
-                            "new schema-valid result."
-                        ),
+                        "content": repair_guidance,
                     }
                 )
 

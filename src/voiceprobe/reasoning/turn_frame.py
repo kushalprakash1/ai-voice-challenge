@@ -308,4 +308,12 @@ class TurnFrame(BaseModel):
                 "confirmed_appointment requires booking_confirmed=true."
             )
 
+        if (
+            self.booking_confirmed
+            and self.confirmed_appointment is None
+        ):
+            raise ValueError(
+                "booking_confirmed=true requires confirmed_appointment."
+            )
+
         return self
