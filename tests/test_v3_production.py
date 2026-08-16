@@ -90,7 +90,7 @@ def test_bridge_queues_only_response_ready_decisions() -> None:
     asyncio.run(scenario())
 
 
-def test_bridge_does_not_speak_unresolved_fallback() -> None:
+def test_bridge_resolves_unknown_turn_to_safe_clarification() -> None:
     async def scenario():
         bridge, worker = make_bridge()
 
@@ -98,11 +98,34 @@ def test_bridge_does_not_speak_unresolved_fallback() -> None:
             ["Could you unpack the metaphysics of this appointment?"]
         )
 
-        assert result.decision.kind == DecisionKind.FALLBACK
-        assert result.response_ready is False
-        assert worker.frames == []
+        # The route remains FALLBACK for telemetry, but production converts the
+        # unresolved policy result into a speakable, non-mutating clarification.
+        assert result.route.value == "fallback"
+        assert result.decision.kind == DecisionKind.CLARIFY
+        assert result.decision.reason == "production_safe_clarification"
+        assert result.decision.text == "Could you please repeat that question?"
+        assert result.response_ready is True
+
+        # Clarification must not invent progress or alter booking state.
+        assert result.after == result.before
+
+        assert len(worker.frames) == 1
+        assert worker.frames[0].text == "Could you please repeat that question?"
+        assert bridge.queued_speech_count == 1
+        assert bridge.runtime.metrics.fallback_decisions == 1
 
     asyncio.run(scenario())
+
+
+def test_production_bridge_rejects_missing_fallback_resolver() -> None:
+    with pytest.raises(
+        ValueError,
+        match="fallback_resolver must not be None",
+    ):
+        PipecatRuntimeBridge(
+            tts_frame_factory=FakeSpeechFrame,
+            fallback_resolver=None,
+        )
 
 
 def test_bridge_marks_busy_before_tts_and_drains_after_tts_stops() -> None:

@@ -16,7 +16,13 @@ import inspect
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .runtime import RuntimeDecision, VoiceProbeV3Runtime
+from .flow_state import FlowSnapshot
+from .models import DecisionKind, PolicyDecision
+from .runtime import (
+    FallbackResolver,
+    RuntimeDecision,
+    VoiceProbeV3Runtime,
+)
 from .turn_stabilizer import DEFAULT_CONTINUATION_GRACE_MS
 
 
@@ -59,6 +65,28 @@ class ProductionFluxConfig:
 
 
 DEFAULT_PRODUCTION_FLUX_CONFIG = ProductionFluxConfig()
+
+
+def safe_production_fallback_resolver(
+    agent_turn: str,
+    snapshot: FlowSnapshot,
+) -> PolicyDecision:
+    """Resolve unknown production turns without guessing or going silent.
+
+    The deterministic fast policy still owns routine scheduling semantics.
+    When that policy explicitly returns FALLBACK, production asks the remote
+    side to repeat the question. CLARIFY intentionally has no flow-state
+    transition, so accepted slots, booking confirmation, and scheduling
+    constraints remain untouched.
+    """
+
+    del agent_turn, snapshot
+
+    return PolicyDecision(
+        kind=DecisionKind.CLARIFY,
+        text="Could you please repeat that question?",
+        reason="production_safe_clarification",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,8 +146,15 @@ class PipecatRuntimeBridge:
         *,
         config: ProductionFluxConfig = DEFAULT_PRODUCTION_FLUX_CONFIG,
         tts_frame_factory: Callable[[str], Any] | None = None,
+        fallback_resolver: FallbackResolver = safe_production_fallback_resolver,
     ) -> None:
         config.validate()
+
+        if fallback_resolver is None:
+            raise ValueError(
+                "Production fallback_resolver must not be None; "
+                "unresolved FALLBACK decisions must never become silence."
+            )
 
         self._config = config
         self._frame_sink: Any | None = None
@@ -127,6 +162,7 @@ class PipecatRuntimeBridge:
         self._tts_frame_factory = tts_frame_factory or _default_tts_frame_factory
 
         self._runtime = VoiceProbeV3Runtime(
+            fallback_resolver=fallback_resolver,
             on_decision=self._on_runtime_decision,
             continuation_grace_ms=config.continuation_grace_ms,
         )

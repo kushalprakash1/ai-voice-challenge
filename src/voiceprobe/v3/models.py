@@ -20,6 +20,7 @@ class DecisionKind(StrEnum):
     CHOOSE_SEARCH_BRANCH = "choose_search_branch"
     DECLINE_INCOMPATIBLE_OFFER = "decline_incompatible_offer"
     STATE_OBJECTIVE = "state_objective"
+    CLARIFY = "clarify"
     FALLBACK = "fallback"
 
 
