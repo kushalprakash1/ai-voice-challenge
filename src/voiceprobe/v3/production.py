@@ -122,7 +122,7 @@ class PipecatRuntimeBridge:
         config.validate()
 
         self._config = config
-        self._worker: Any | None = None
+        self._frame_sink: Any | None = None
         self._queued_speech_count = 0
         self._tts_frame_factory = tts_frame_factory or _default_tts_frame_factory
 
@@ -144,15 +144,24 @@ class PipecatRuntimeBridge:
         return self._queued_speech_count
 
     @property
+    def frame_sink_bound(self) -> bool:
+        return self._frame_sink is not None
+
+    @property
     def worker_bound(self) -> bool:
-        return self._worker is not None
+        return self.frame_sink_bound
+
+    def bind_frame_sink(self, sink: Any) -> None:
+        if not hasattr(sink, "queue_frames"):
+            raise TypeError("Pipecat frame sink must provide queue_frames(frames)")
+        if self._frame_sink is not None and self._frame_sink is not sink:
+            raise RuntimeError(
+                "PipecatRuntimeBridge is already bound to another frame sink"
+            )
+        self._frame_sink = sink
 
     def bind_worker(self, worker: Any) -> None:
-        if not hasattr(worker, "queue_frames"):
-            raise TypeError("Pipecat worker must provide queue_frames(frames)")
-        if self._worker is not None and self._worker is not worker:
-            raise RuntimeError("PipecatRuntimeBridge is already bound to another worker")
-        self._worker = worker
+        self.bind_frame_sink(worker)
 
     def attach_flux(self, stt_service: Any) -> None:
         self._runtime.attach_flux(stt_service)
@@ -164,9 +173,9 @@ class PipecatRuntimeBridge:
         if not result.response_ready:
             return
 
-        if self._worker is None:
+        if self._frame_sink is None:
             raise RuntimeError(
-                "A response became ready before the Pipecat worker was bound"
+                "A response became ready before a Pipecat frame sink was bound"
             )
 
         # Busy begins before TTS synthesis is queued, so any remote speech
@@ -174,7 +183,7 @@ class PipecatRuntimeBridge:
         self._runtime.mark_response_started()
 
         frame = self._tts_frame_factory(result.decision.text)
-        maybe = self._worker.queue_frames([frame])
+        maybe = self._frame_sink.queue_frames([frame])
 
         if inspect.isawaitable(maybe):
             await maybe

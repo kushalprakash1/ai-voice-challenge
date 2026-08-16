@@ -217,6 +217,14 @@ class AudioSocketKokoroSpeechTask:
     ) -> None:
         self._on_playback_finished = callback
 
+    async def queue_frames(self, frames: list[Any]) -> None:
+        if len(frames) != 1:
+            raise ValueError(
+                "AudioSocket Kokoro speech sink accepts exactly one speech frame"
+            )
+
+        await self.queue_frame(frames[0])
+
     async def queue_frame(self, frame: Any) -> None:
         text = getattr(frame, "text", None)
 
