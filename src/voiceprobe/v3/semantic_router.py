@@ -532,6 +532,36 @@ _ALTERNATE_WEEKDAY_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
+# Prefer a weekday grounded in the scheduler's proposed search action.
+# This matters for utterances such as:
+#
+#   "Monday only has morning times. Would you like me to check
+#    afternoon slots on Tuesday?"
+#
+# A naive first-weekday match would incorrectly select Monday.
+_TARGET_ALTERNATE_WEEKDAY_RE = re.compile(
+    r"\b(?:check|look(?:\s+at|\s+for)?|see|search(?:\s+for)?)\b"
+    r"[^?.!]{0,96}?\b(monday|tuesday|wednesday|thursday)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _grounded_alternate_weekday(agent_turn: str) -> str | None:
+    targeted = _TARGET_ALTERNATE_WEEKDAY_RE.search(agent_turn)
+
+    if targeted is not None:
+        return targeted.group(1).title()
+
+    # If the scheduler names example alternate days without attaching
+    # one to a separate action phrase, preserve the existing first
+    # explicitly grounded weekday behavior.
+    first = _ALTERNATE_WEEKDAY_RE.search(agent_turn)
+
+    if first is not None:
+        return first.group(1).title()
+
+    return None
+
 
 def _complex_scheduling_action(
     agent_turn: str,
@@ -545,12 +575,7 @@ def _complex_scheduling_action(
     evidence and the durable scheduling state.
     """
 
-    offered_day = None
-
-    match = _ALTERNATE_WEEKDAY_RE.search(agent_turn)
-
-    if match is not None:
-        offered_day = match.group(1).title()
+    offered_day = _grounded_alternate_weekday(agent_turn)
 
     if offered_day is not None:
         response = f"Please check {offered_day} afternoon."
@@ -839,6 +864,19 @@ class V31SemanticRouter:
             )
 
         if intent == SemanticIntent.DATE_TIME_PREFERENCE_REQUEST:
+            grounded_weekday = _grounded_alternate_weekday(agent_turn)
+
+            if (
+                snapshot.allow_earlier_week_afternoons
+                and "afternoon" in _normalize(agent_turn)
+                and grounded_weekday is not None
+            ):
+                return _complex_scheduling_action(
+                    agent_turn,
+                    snapshot,
+                    classification.confidence,
+                )
+
             return PolicyDecision(
                 DecisionKind.STATE_OBJECTIVE,
                 text=f"{facts.preferred_day} {facts.preferred_time}.",

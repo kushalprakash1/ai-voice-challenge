@@ -681,7 +681,9 @@ class RoutineSchedulingPolicy:
         if offered_pm_slot is not None and slot_offer_cue:
             return PolicyDecision(
                 DecisionKind.GRANT_PERMISSION,
-                text="Yes, that works for me. Please book it.",
+                text=(
+                    f"Yes, please book the {offered_pm_slot} slot."
+                ),
                 reason="compatible_concrete_slot_offered",
             )
 

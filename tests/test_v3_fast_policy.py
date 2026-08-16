@@ -66,7 +66,7 @@ def test_compatible_concrete_friday_afternoon_slot_is_accepted() -> None:
     )
 
     assert decision.kind.value == "grant_permission"
-    assert decision.text == "Yes, that works for me. Please book it."
+    assert decision.text == "Yes, please book the 2:30 PM slot."
     assert decision.reason == "compatible_concrete_slot_offered"
 
 

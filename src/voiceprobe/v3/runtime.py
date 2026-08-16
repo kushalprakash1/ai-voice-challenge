@@ -209,8 +209,22 @@ class VoiceProbeV3Runtime:
                 self._fallback_resolver is not None
                 and flow_decision.actionable_turn is not None
             ):
+                # Semantic fallback needs the complete stabilized Flux burst,
+                # not only the final fragment chosen as actionable by the
+                # deterministic coalescer. This preserves context such as:
+                #
+                #   "Would you like another afternoon day?"
+                #   "or check the next available Friday."
+                #
+                # The deterministic route still keeps actionable_turn unchanged.
+                semantic_turn = (
+                    " ".join(flow_decision.source_turns)
+                    if len(flow_decision.source_turns) > 1
+                    else flow_decision.actionable_turn
+                )
+
                 maybe_decision = self._fallback_resolver(
-                    flow_decision.actionable_turn,
+                    semantic_turn,
                     flow_decision.before,
                 )
 
