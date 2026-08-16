@@ -138,7 +138,10 @@ class RoutineSchedulingPolicy:
             )
 
         # Provider choice should not be mistaken for another date/time request.
-        if _contains_any(
+        # Real Flux wording varies between "is first available okay?" and
+        # "do you have a preference, or should I offer the first available?"
+        # Keep this semantic rather than encoding provider names.
+        provider_preference_requested = _contains_any(
             text,
             (
                 "first available okay",
@@ -147,7 +150,34 @@ class RoutineSchedulingPolicy:
                 "prefer to see dr.",
                 "provider do you prefer",
             ),
-        ):
+        )
+
+        if not provider_preference_requested:
+            mentions_first_available = "first available" in text
+            mentions_provider = _contains_any(
+                text,
+                (
+                    "provider",
+                    "doctor",
+                    "physician",
+                    "dr.",
+                ),
+            )
+            asks_provider_choice = _contains_any(
+                text,
+                (
+                    "preference",
+                    "prefer",
+                    "offer",
+                ),
+            )
+            provider_preference_requested = (
+                mentions_first_available
+                and mentions_provider
+                and asks_provider_choice
+            )
+
+        if provider_preference_requested:
             return PolicyDecision(
                 DecisionKind.ANSWER_PROVIDER_PREFERENCE,
                 text="First available is fine.",

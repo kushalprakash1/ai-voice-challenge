@@ -42,3 +42,18 @@ def test_provider_choice_uses_stored_provider_preference() -> None:
     )
 
     assert decision.text == "First available is fine."
+
+def test_provider_choice_handles_generic_offer_first_available_wording() -> None:
+    policy = RoutineSchedulingPolicy()
+
+    decision = policy.decide(
+        (
+            "We have openings on Friday afternoon with doctor A and doctor B. "
+            "Do you have a preference, or should I offer the first available?"
+        )
+    )
+
+    assert decision.kind.value == "answer_provider_preference"
+    assert decision.text == "First available is fine."
+    assert decision.reason == "provider_preference_requested"
+

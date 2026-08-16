@@ -24,3 +24,16 @@ path.
 
 The exact 13 Flux EndOfTurn transcripts are frozen in
 `tests/fixtures/v3_calls/flux_latest_eot_085.jsonl`.
+
+## Real WorkerRunner latest-call provider wording
+
+The real Pipecat WorkerRunner replay surfaced a second provider-choice wording:
+the remote agent named two doctors and asked whether the patient had a
+preference or whether it should offer the first available. This is semantically
+the same provider-preference primitive as the previously observed
+"first available okay?" wording.
+
+The fast policy now recognizes provider-choice turns structurally when they
+mention first available, identify a provider/doctor/physician option, and ask
+for a preference/choice. No provider names are encoded.
+
