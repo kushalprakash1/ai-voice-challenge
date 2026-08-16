@@ -154,9 +154,18 @@ class RoutineSchedulingPolicy:
                 reason="provider_preference_requested",
             )
 
-        # A branch that explicitly preserves Friday afternoon.
+        # A branch that explicitly preserves Friday afternoon. Flux can
+        # render calendar ordinals either numerically or as spoken words.
+        mentions_august_28 = _contains_any(
+            text,
+            (
+                "august 28",
+                "august twenty eighth",
+                "august twenty-eighth",
+            ),
+        )
         if (
-            "august 28" in text
+            mentions_august_28
             and "afternoon" in text
             and _contains_any(text, ("would you like", "check", "look"))
         ):
@@ -315,7 +324,19 @@ class RoutineSchedulingPolicy:
             r"\b(?:9|9[.:]45|10[.:]30)\s*(?:a\.?m\.?|am)\b",
             text,
         )
-        if time_matches and _contains_any(
+        spoken_morning_time = _contains_any(
+            text,
+            (
+                "nine am",
+                "nine a.m.",
+                "nine forty five am",
+                "nine forty-five am",
+                "nine forty five a.m.",
+                "ten thirty am",
+                "ten thirty a.m.",
+            ),
+        )
+        if (time_matches or spoken_morning_time) and _contains_any(
             text,
             (
                 "work for you",
