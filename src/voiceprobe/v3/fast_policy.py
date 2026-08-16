@@ -83,6 +83,25 @@ def _is_obvious_fragment(text: str) -> bool:
     if words and words[-1] in _INCOMPLETE_FINAL_WORDS:
         return True
 
+    # Flux can finalize a short list introduction before PGAI continues
+    # speaking. Treat these as incomplete rather than sending them into the
+    # semantic scheduler. This prevents an unfinished availability sentence
+    # from being mistaken for a request to alter the patient's constraints.
+    short_listing_intro = (
+        len(words) <= 7
+        and "?" not in stripped
+        and normalized.startswith(
+            (
+                "here are some ",
+                "here are the ",
+                "these are some ",
+            )
+        )
+    )
+
+    if short_listing_intro:
+        return True
+
     return False
 
 
@@ -160,6 +179,25 @@ class RoutineSchedulingPolicy:
         text = _norm(agent_turn)
         raw = agent_turn.strip()
         f = self.facts
+
+        standalone_acknowledgements = {
+            "no problem",
+            "okay",
+            "ok",
+            "sure",
+            "got it",
+            "alright",
+            "all right",
+            "of course",
+            "thank you",
+            "thanks",
+        }
+
+        if text.rstrip(".!?") in standalone_acknowledgements:
+            return PolicyDecision(
+                DecisionKind.WAIT,
+                reason="standalone_acknowledgement",
+            )
 
         # Live regression 2026-08-16: Flux emitted a complete, actionable
         # wrong-DOB + open-intent turn with a trailing comma. The generic
@@ -350,6 +388,21 @@ class RoutineSchedulingPolicy:
                 "which provider",
                 "prefer to see dr.",
                 "provider do you prefer",
+                "preferred provider",
+                "specific provider",
+                "specific doctor",
+                "certain provider",
+                "certain doctor",
+                "open to any available provider",
+                "open to any available doctor",
+                "whoever is available",
+                "any available provider",
+                "any available doctor",
+                "anyone available",
+                "soonest available with either",
+                "available with either",
+                "would you like to see doctor",
+                "would you like to see dr.",
             ),
         )
 
