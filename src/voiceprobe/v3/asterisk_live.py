@@ -36,6 +36,8 @@ from voiceprobe.runner import AssessmentCallRequest, CallExecutionError
 from voiceprobe.scenarios.catalog import get_scenario
 from voiceprobe.telephony.ami import AsteriskHangupResult, OriginateResult
 
+from .live_monitor import LiveAudioMonitor
+
 from .audiosocket_kokoro import (
     AudioSocketKokoroConfig,
     AudioSocketKokoroSpeechTask,
@@ -647,7 +649,10 @@ def execute_v3_asterisk_media(
 
     scenario = get_scenario(request.scenario_id)
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+    with (
+        LiveAudioMonitor.from_environment() as live_monitor,
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server,
+    ):
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind((host, port))
         server.listen(1)
@@ -827,12 +832,14 @@ def execute_v3_asterisk_media(
                                 send_lock=send_lock,
                                 recorder=recorder,
                                 config=AudioSocketKokoroConfig(voice=voice),
+                                audio_observer=live_monitor.observe_outbound,
                             )
                             boundary = AudioSocketV3MediaBoundary(
                                 connection=connection,
                                 speech_task=speech_task,
                                 send_lock=send_lock,
                                 recorder=recorder,
+                                audio_observer=live_monitor.observe_inbound,
                             )
 
                             # Contract: UUID -> idle media -> WorkerRunner/Flux.

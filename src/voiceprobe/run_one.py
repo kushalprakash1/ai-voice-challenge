@@ -7,6 +7,7 @@ reuse or execute a multi-call suite manifest.
 from __future__ import annotations
 
 import argparse
+import os
 import json
 from dataclasses import asdict, replace
 from decimal import Decimal
@@ -238,6 +239,16 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--live-monitor",
+        action="store_true",
+        help=(
+            "Listen locally to both sides of the live call through ffplay. "
+            "Monitoring uses one local mixed stream and is non-blocking; "
+            "it never enters the call-critical media path."
+        ),
+    )
+
+    parser.add_argument(
         "--confirm",
         default="",
         help="Exact live confirmation token.",
@@ -273,6 +284,16 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if args.live_monitor and not args.live:
+        parser.error("--live-monitor requires --live")
+
+    # Keep monitoring explicitly opt-in for run_one. The actual media layer
+    # reads this flag independently so the known-good adapter call signatures
+    # and safety/budget plumbing remain unchanged.
+    os.environ["VOICEPROBE_LIVE_MONITOR"] = (
+        "1" if args.live_monitor else "0"
+    )
 
     settings = Settings()  # type: ignore[call-arg]
 

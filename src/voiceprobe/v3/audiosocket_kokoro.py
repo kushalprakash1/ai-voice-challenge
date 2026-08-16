@@ -178,6 +178,7 @@ class AudioSocketKokoroSpeechTask:
         config: AudioSocketKokoroConfig = AudioSocketKokoroConfig(),
         send_audio_fn: SendAudioFn | None = None,
         on_playback_finished: PlaybackFinishedFn | None = None,
+        audio_observer: Callable[[bytes], None] | None = None,
     ) -> None:
         config.validate()
 
@@ -188,6 +189,7 @@ class AudioSocketKokoroSpeechTask:
         self._config = config
         self._send_audio_fn = send_audio_fn
         self._on_playback_finished = on_playback_finished
+        self._audio_observer = audio_observer
 
         self._playback_active = threading.Event()
         self._playback_task: asyncio.Task[None] | None = None
@@ -333,6 +335,16 @@ class AudioSocketKokoroSpeechTask:
                 await maybe
 
     def _send_audio(self, pcm16: bytes) -> None:
+        observer = self._audio_observer
+
+        if observer is not None:
+            try:
+                # Observer contract is non-blocking. Any monitor failure is
+                # deliberately isolated from the telephony send path.
+                observer(pcm16)
+            except Exception:
+                pass
+
         send_audio_fn = self._send_audio_fn
 
         if send_audio_fn is None:
@@ -372,12 +384,14 @@ class AudioSocketV3MediaBoundary:
         send_lock: threading.Lock,
         recorder: RecorderLike | None = None,
         idle_silence_fn: IdleSilenceFn | None = None,
+        audio_observer: Callable[[bytes], None] | None = None,
     ) -> None:
         self._connection = connection
         self._speech_task = speech_task
         self._send_lock = send_lock
         self._recorder = recorder
         self._idle_silence_fn = idle_silence_fn
+        self._audio_observer = audio_observer
         self._idle_thread: threading.Thread | None = None
 
     @property
@@ -428,6 +442,17 @@ class AudioSocketV3MediaBoundary:
 
         if self._recorder is not None:
             self._recorder.record_inbound_pcm(payload)
+
+        observer = self._audio_observer
+
+        if observer is not None:
+            try:
+                # Monitor every raw inbound frame, including genuine remote
+                # overlap while Alex is speaking. Never let an observer error
+                # alter Flux forwarding or the echo guard.
+                observer(payload)
+            except Exception:
+                pass
 
         if self._speech_task.playback_active.is_set():
             return False
