@@ -33,6 +33,10 @@ from voiceprobe.artifacts.recorder import RunArtifactRecorder
 from voiceprobe.conversation.session import PatientSession
 from voiceprobe.conversation.turns import CompletedTurn
 from voiceprobe.interpreters.ollama import OllamaConversationInterpreter
+from voiceprobe.reasoning.session_v2 import (
+    ReasoningV2PatientSession,
+    reasoning_v2_enabled_from_environment,
+)
 from voiceprobe.media.live_asr import (
     AUDIO_SAMPLE_RATE_HZ,
     TYPE_DTMF,
@@ -94,6 +98,47 @@ PRE_RENDERED_TTS_TEXTS = (
     "I don't have a preference. Any available provider is fine.",
     'No, I need Friday afternoon.',
 )
+
+
+def build_runtime_patient_session(
+    *,
+    scenario: PatientScenario,
+    model: str,
+    url: str,
+    client: httpx.Client,
+) -> PatientSession | ReasoningV2PatientSession:
+    """Build the reasoning implementation selected for this process.
+
+    Legacy PatientSession remains the default. Reasoning v2 must be
+    explicitly enabled with VOICEPROBE_REASONING_V2=1.
+    """
+
+    if reasoning_v2_enabled_from_environment():
+        return ReasoningV2PatientSession(
+            scenario=scenario,
+            model=model,
+            url=url,
+            client=client,
+        )
+
+    interpreter = OllamaConversationInterpreter(
+        model=model,
+        url=url,
+        client=client,
+    )
+
+    verbalizer = OllamaNaturalVerbalizer(
+        model=model,
+        url=url,
+        client=client,
+    )
+
+    return PatientSession(
+        scenario=scenario,
+        interpreter=interpreter,
+        verbalizer=verbalizer,
+        brain=PatientBrain(),
+    )
 
 
 def build_scenario(
@@ -959,23 +1004,23 @@ def main(
     with httpx.Client(
         timeout=20.0,
     ) as client:
-        interpreter = OllamaConversationInterpreter(
-            model=args.model,
-            url=args.url,
-            client=client,
-        )
-
-        verbalizer = OllamaNaturalVerbalizer(
-            model=args.model,
-            url=args.url,
-            client=client,
-        )
-
-        session = PatientSession(
+        session = build_runtime_patient_session(
             scenario=scenario,
-            interpreter=interpreter,
-            verbalizer=verbalizer,
-            brain=PatientBrain(),
+            model=args.model,
+            url=args.url,
+            client=client,
+        )
+
+        print(
+            "Reasoning: "
+            + (
+                "v2"
+                if isinstance(
+                    session,
+                    ReasoningV2PatientSession,
+                )
+                else "legacy"
+            )
         )
 
         with socket.socket(

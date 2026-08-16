@@ -36,6 +36,10 @@ from voiceprobe.autonomous_phone import (
 )
 from voiceprobe.conversation.session import PatientSession
 from voiceprobe.interpreters.ollama import OllamaConversationInterpreter
+from voiceprobe.reasoning.session_v2 import (
+    ReasoningV2PatientSession,
+    reasoning_v2_enabled_from_environment,
+)
 from voiceprobe.policy import CallPolicy
 from voiceprobe.policy import MAX_CALL_DURATION_SECONDS
 from voiceprobe.runner import (
@@ -462,24 +466,34 @@ class AsteriskAssessmentCallAdapter:
 
         scenario = get_scenario(request.scenario_id)
 
-        interpreter = OllamaConversationInterpreter(
-            model=self._model,
-            url=self._ollama_url,
-            client=http_client,
-        )
+        if reasoning_v2_enabled_from_environment():
+            session = ReasoningV2PatientSession(
+                scenario=scenario,
+                model=self._model,
+                url=self._ollama_url,
+                client=http_client,
+            )
+        else:
+            # Preserve the existing production behavior exactly when
+            # VOICEPROBE_REASONING_V2 is unset or zero.
+            interpreter = OllamaConversationInterpreter(
+                model=self._model,
+                url=self._ollama_url,
+                client=http_client,
+            )
 
-        verbalizer = DeterministicNaturalVerbalizer(
-            model=self._model,
-            url=self._ollama_url,
-            client=http_client,
-        )
+            verbalizer = DeterministicNaturalVerbalizer(
+                model=self._model,
+                url=self._ollama_url,
+                client=http_client,
+            )
 
-        session = PatientSession(
-            scenario=scenario,
-            interpreter=interpreter,
-            verbalizer=verbalizer,
-            brain=PatientBrain(),
-        )
+            session = PatientSession(
+                scenario=scenario,
+                interpreter=interpreter,
+                verbalizer=verbalizer,
+                brain=PatientBrain(),
+            )
 
         try:
             with socket.socket(
