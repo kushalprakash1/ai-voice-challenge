@@ -343,6 +343,41 @@ def terminate_audiosocket_connection(
     return packet_sent
 
 
+def queue_completed_turn(
+    *,
+    turn: CompletedTurn,
+    turns: queue.Queue[CompletedTurn | None],
+    busy: threading.Event,
+    stop: threading.Event,
+) -> str:
+    # Queue one finalized remote-agent turn without dropping it.
+
+    if stop.is_set():
+        return "stopped"
+
+    disposition = (
+        "buffered"
+        if busy.is_set()
+        else "queued"
+    )
+
+    # Claim the response window before publishing the item so speculative
+    # prefetch cannot race a newly finalized turn.
+    busy.set()
+    turns.put_nowait(turn)
+
+    return disposition
+
+
+def should_forward_inbound_audio(
+    *,
+    playback_active: threading.Event,
+) -> bool:
+    # Reasoning/TTS preparation must not stop listening. Only actual patient
+    # playback plus the echo guard mutes Moonshine.
+    return not playback_active.is_set()
+
+
 def process_turns(
     *,
     turns: queue.Queue[CompletedTurn | None],
@@ -353,10 +388,18 @@ def process_turns(
     busy: threading.Event,
     stop: threading.Event,
     recorder: RunArtifactRecorder,
+    playback_active: threading.Event | None = None,
     audiosocket_send_lock: threading.Lock | None = None,
     tts_pcm_cache: dict[str, bytes] | None = None,
 ) -> None:
     """Process complete ASR turns sequentially."""
+
+    # Keep the public worker contract backward compatible for existing tests
+    # and callers. Production handle_call passes a shared event explicitly;
+    # direct callers get a private event with identical behavior.
+    if playback_active is None:
+        playback_active = threading.Event()
+
     while True:
         turn = turns.get()
 
@@ -366,6 +409,10 @@ def process_turns(
 
             if stop.is_set():
                 return
+
+            # A buffered item may begin immediately after the prior turn
+            # clears busy in its finally block.
+            busy.set()
 
             print()
             print("=" * 72)
@@ -575,6 +622,9 @@ def process_turns(
                 tts_text=tts_text,
             )
 
+            # Half-duplex is scoped to actual patient audio, not reasoning.
+            playback_active.set()
+
             print("Speaking...")
 
             send_audio_synchronized(
@@ -628,6 +678,7 @@ def process_turns(
             # Keep inbound ASR muted briefly after ordinary playback so PSTN
             # echo does not immediately become the next receptionist turn.
             time.sleep(ECHO_GUARD_SECONDS)
+            playback_active.clear()
 
         except (
             httpx.HTTPError,
@@ -648,6 +699,10 @@ def process_turns(
             print(f"TURN ERROR: {type(error).__name__}: {error}")
 
         finally:
+            # Never leave the receive loop permanently muted after a failed
+            # playback, local hangup, or worker exception.
+            playback_active.clear()
+
             if turn is not None:
                 busy.clear()
 
@@ -667,6 +722,7 @@ def handle_call(
     turn_queue: queue.Queue[CompletedTurn | None] = queue.Queue()
 
     busy = threading.Event()
+    playback_active = threading.Event()
     stop = threading.Event()
 
     # Speech and idle-silence media must never write to AudioSocket
@@ -701,20 +757,14 @@ def handle_call(
     def enqueue_turn(
         turn: CompletedTurn,
     ) -> None:
-        # Claim the half-duplex response window immediately. This closes
-        # the race between Moonshine completing a turn and the worker
-        # beginning inference.
-        if stop.is_set():
-            return
+        disposition = queue_completed_turn(
+            turn=turn,
+            turns=turn_queue,
+            busy=busy,
+            stop=stop,
+        )
 
-        if busy.is_set():
-            recorder.record_event(
-                "agent_turn_dropped",
-                reason="half_duplex_busy",
-                text=turn.text,
-            )
-
-            print(f"[HALF-DUPLEX] Dropping overlapping turn: {turn.text!r}")
+        if disposition == "stopped":
             return
 
         recorder.record_transcript_turn(
@@ -729,10 +779,21 @@ def handle_call(
             "agent_turn_completed",
             text=turn.text,
             lines=turn.lines,
+            queue_disposition=disposition,
         )
 
-        busy.set()
-        turn_queue.put_nowait(turn)
+        if disposition == "buffered":
+            recorder.record_event(
+                "agent_turn_buffered",
+                reason="reasoning_or_response_busy",
+                text=turn.text,
+                queue_depth=turn_queue.qsize(),
+            )
+
+            print(
+                f"[TURN BUFFER] Preserving overlapping turn: {turn.text!r}",
+                flush=True,
+            )
 
     transcriber, listener = build_transcriber(
         on_turn=enqueue_turn,
@@ -749,6 +810,7 @@ def handle_call(
             "pipeline": pipeline,
             "voice": voice,
             "busy": busy,
+            "playback_active": playback_active,
             "stop": stop,
             "recorder": recorder,
             "audiosocket_send_lock": audiosocket_send_lock,
@@ -875,10 +937,12 @@ def handle_call(
             # withholds from Moonshine.
             recorder.record_inbound_pcm(payload)
 
-            # First diagnostic is intentionally half-duplex. Audio
-            # received while VoiceProbe is reasoning/speaking is consumed
-            # from AudioSocket but never sent to Moonshine.
-            if busy.is_set():
+            # Continue listening during reasoning and TTS preparation.
+            # Suppress Moonshine input only while our own patient speech is
+            # actually on the wire plus the short echo-guard interval.
+            if not should_forward_inbound_audio(
+                playback_active=playback_active,
+            ):
                 continue
 
             audio = pcm16_to_float32(payload)
