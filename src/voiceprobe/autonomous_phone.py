@@ -378,6 +378,255 @@ def should_forward_inbound_audio(
     return not playback_active.is_set()
 
 
+_FRAGMENT_MERGE_WINDOW_SECONDS = 4.0
+
+_FRAGMENT_TRAILING_WORDS = frozenset(
+    {
+        "a",
+        "about",
+        "an",
+        "and",
+        "any",
+        "at",
+        "because",
+        "but",
+        "for",
+        "from",
+        "if",
+        "in",
+        "of",
+        "on",
+        "or",
+        "our",
+        "so",
+        "the",
+        "their",
+        "to",
+        "with",
+        "your",
+    }
+)
+
+_FRAGMENT_AUXILIARY_STARTERS = frozenset(
+    {
+        "are",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "has",
+        "have",
+        "is",
+        "should",
+        "was",
+        "were",
+        "will",
+        "would",
+    }
+)
+
+_CONTINUATION_STARTERS = frozenset(
+    {
+        "a",
+        "an",
+        "any",
+        "at",
+        "for",
+        "from",
+        "in",
+        "of",
+        "on",
+        "or",
+        "the",
+        "these",
+        "this",
+        "those",
+        "to",
+        "with",
+        "you",
+        "your",
+    }
+)
+
+
+def _normalized_tokens(text: str) -> tuple[str, ...]:
+    normalized = " ".join(text.split())
+
+    if not normalized:
+        return ()
+
+    return tuple(
+        token.casefold().strip("'\\\"()[]{}?!.,:;…—-")
+        for token in normalized.split()
+        if token.strip("'\\\"()[]{}?!.,:;…—-")
+    )
+
+
+def is_incomplete_turn_fragment(text: str) -> bool:
+    # Detect only obvious ASR truncations that are unsafe to reason over.
+
+    normalized = " ".join(text.split())
+
+    if not normalized:
+        return True
+
+    if normalized.endswith(("...", "…", ",", "-", "—", ":")):
+        return True
+
+    tokens = _normalized_tokens(normalized)
+
+    if not tokens:
+        return True
+
+    if tokens[-1] in _FRAGMENT_TRAILING_WORDS:
+        return True
+
+    if (
+        len(tokens) <= 3
+        and tokens[0] in _FRAGMENT_AUXILIARY_STARTERS
+        and not normalized.endswith(("?", ".", "!"))
+    ):
+        return True
+
+    return False
+
+
+def _looks_like_continuation(
+    pending: CompletedTurn,
+    following: CompletedTurn,
+) -> bool:
+    gap_seconds = max(
+        0.0,
+        following.started_at - pending.completed_at,
+    )
+
+    if gap_seconds > _FRAGMENT_MERGE_WINDOW_SECONDS:
+        return False
+
+    pending_tokens = _normalized_tokens(pending.text)
+    following_tokens = _normalized_tokens(following.text)
+
+    if not pending_tokens or not following_tokens:
+        return False
+
+    if following_tokens[0] in _CONTINUATION_STARTERS:
+        return True
+
+    # Do not infer continuation solely from the held fragment's final token.
+    # "Would any..." followed by the independent sentence
+    # "There are no Friday afternoon openings." must not merge.
+    return False
+
+
+def merge_completed_turns(
+    first: CompletedTurn,
+    second: CompletedTurn,
+) -> CompletedTurn:
+    first_text = first.text.rstrip()
+
+    if first_text.endswith("..."):
+        first_text = first_text[:-3].rstrip()
+    elif first_text.endswith("…"):
+        first_text = first_text[:-1].rstrip()
+
+    merged_text = " ".join(
+        part
+        for part in (
+            first_text,
+            second.text.strip(),
+        )
+        if part
+    )
+
+    return CompletedTurn(
+        text=merged_text,
+        lines=first.lines + second.lines,
+        started_at=first.started_at,
+        completed_at=second.completed_at,
+    )
+
+
+class IncompleteTurnBuffer:
+    def __init__(
+        self,
+        *,
+        merge_window_seconds: float = _FRAGMENT_MERGE_WINDOW_SECONDS,
+    ) -> None:
+        if merge_window_seconds <= 0:
+            raise ValueError(
+                "merge_window_seconds must be greater than zero."
+            )
+
+        self.merge_window_seconds = merge_window_seconds
+        self._pending: CompletedTurn | None = None
+        self._lock = threading.Lock()
+
+    def ingest(
+        self,
+        turn: CompletedTurn,
+    ) -> tuple[CompletedTurn | None, str, CompletedTurn | None]:
+        # Return (actionable_turn, disposition, discarded_fragment).
+
+        with self._lock:
+            if is_incomplete_turn_fragment(turn.text):
+                discarded: CompletedTurn | None = None
+
+                if self._pending is not None:
+                    gap_seconds = max(
+                        0.0,
+                        turn.started_at - self._pending.completed_at,
+                    )
+
+                    if gap_seconds <= self.merge_window_seconds:
+                        self._pending = merge_completed_turns(
+                            self._pending,
+                            turn,
+                        )
+                    else:
+                        discarded = self._pending
+                        self._pending = turn
+                else:
+                    self._pending = turn
+
+                return None, "held_fragment", discarded
+
+            if self._pending is None:
+                return turn, "ready", None
+
+            pending = self._pending
+            self._pending = None
+
+            gap_seconds = max(
+                0.0,
+                turn.started_at - pending.completed_at,
+            )
+
+            if (
+                gap_seconds <= self.merge_window_seconds
+                and _looks_like_continuation(
+                    pending,
+                    turn,
+                )
+            ):
+                return (
+                    merge_completed_turns(
+                        pending,
+                        turn,
+                    ),
+                    "merged_fragment",
+                    None,
+                )
+
+            return turn, "fragment_discarded", pending
+
+    def take_pending(self) -> CompletedTurn | None:
+        with self._lock:
+            pending = self._pending
+            self._pending = None
+            return pending
+
+
 def process_turns(
     *,
     turns: queue.Queue[CompletedTurn | None],
@@ -724,6 +973,7 @@ def handle_call(
     busy = threading.Event()
     playback_active = threading.Event()
     stop = threading.Event()
+    incomplete_turn_buffer = IncompleteTurnBuffer()
 
     # Speech and idle-silence media must never write to AudioSocket
     # concurrently.
@@ -757,6 +1007,46 @@ def handle_call(
     def enqueue_turn(
         turn: CompletedTurn,
     ) -> None:
+        original_turn = turn
+
+        turn, fragment_disposition, discarded_fragment = (
+            incomplete_turn_buffer.ingest(turn)
+        )
+
+        if discarded_fragment is not None:
+            recorder.record_event(
+                "agent_turn_fragment_discarded",
+                reason="not_safe_to_merge",
+                text=discarded_fragment.text,
+                lines=discarded_fragment.lines,
+            )
+
+        if turn is None:
+            recorder.record_event(
+                "agent_turn_fragment_held",
+                text=original_turn.text,
+                lines=original_turn.lines,
+            )
+
+            print(
+                f"[TURN HOLD] Incomplete ASR fragment: {original_turn.text!r}",
+                flush=True,
+            )
+            return
+
+        if fragment_disposition == "merged_fragment":
+            recorder.record_event(
+                "agent_turn_fragment_merged",
+                continuation_text=original_turn.text,
+                merged_text=turn.text,
+                lines=turn.lines,
+            )
+
+            print(
+                f"[TURN MERGE] Recovered complete turn: {turn.text!r}",
+                flush=True,
+            )
+
         disposition = queue_completed_turn(
             turn=turn,
             turns=turn_queue,
@@ -961,6 +1251,16 @@ def handle_call(
             )
 
         session.invalidate_prefetch()
+
+        unresolved_fragment = incomplete_turn_buffer.take_pending()
+
+        if unresolved_fragment is not None:
+            recorder.record_event(
+                "agent_turn_fragment_discarded",
+                reason="call_ended_before_continuation",
+                text=unresolved_fragment.text,
+                lines=unresolved_fragment.lines,
+            )
 
         transcriber.stop()
         listener.close()
