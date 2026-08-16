@@ -627,6 +627,38 @@ class PersonaDecisionOverlay:
             else None
         )
 
+        # Do not advance or penalize an active adversarial sequence for
+        # speech that is not yet a substantive PGAI response. In particular,
+        # standalone acknowledgements and incomplete Flux fragments should be
+        # silent waits. Transaction confirmations are intentionally NOT
+        # filtered here because PersonaRuntime must still observe them.
+        neutral_wait_reason = (
+            base_decision.reason
+            in {
+                "standalone_acknowledgement",
+                "acknowledgement",
+                "burst_contains_only_non_actionable_turns",
+            }
+            or base_decision.reason.startswith(
+                "semantic_v31:acknowledgement"
+            )
+            or base_decision.reason.startswith(
+                "semantic_v31:status_update"
+            )
+        )
+
+        if (
+            self.runtime.active
+            and (
+                base_decision.kind is DecisionKind.HOLD
+                or (
+                    base_decision.kind is DecisionKind.WAIT
+                    and neutral_wait_reason
+                )
+            )
+        ):
+            return base_decision
+
         persona = self.runtime.consider(
             remote_turn,
             flow_stage=stage_text,
