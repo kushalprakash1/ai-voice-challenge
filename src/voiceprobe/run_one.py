@@ -321,6 +321,16 @@ def main() -> int:
         ),
     )
 
+    parser.add_argument(
+        "--ignore-cumulative-budget",
+        action="store_true",
+        help=(
+            "Disable the self-imposed cross-execution $20 reimbursement "
+            "guard for self-funded testing. Historical ledgers and normal "
+            "per-call accounting are still preserved."
+        ),
+    )
+
     args = parser.parse_args()
 
     if args.live_monitor and not args.live:
@@ -388,10 +398,11 @@ def main() -> int:
         manifest.max_call_duration_seconds
     )
 
-    enforce_cumulative_budget(
-        prior_commitment_usd=prior_commitment_usd,
-        next_call_reservation_usd=next_reservation,
-    )
+    if not args.ignore_cumulative_budget:
+        enforce_cumulative_budget(
+            prior_commitment_usd=prior_commitment_usd,
+            next_call_reservation_usd=next_reservation,
+        )
 
     call_ledger = PersistentCallLedger.initialize(
         authorization,
@@ -431,6 +442,9 @@ def main() -> int:
                 "destination": manifest.destination,
                 "prior_cumulative_commitment_usd": (prior_commitment_usd),
                 "next_call_reserved_usd": (next_reservation),
+                "cumulative_budget_enforced": (
+                    not args.ignore_cumulative_budget
+                ),
                 "entries": [asdict(entry) for entry in result.entries],
             },
             indent=2,
