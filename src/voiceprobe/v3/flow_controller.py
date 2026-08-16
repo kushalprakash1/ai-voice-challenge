@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .coalescer import ConversationBurstCoalescer
 from .flow_state import (
@@ -12,6 +12,17 @@ from .flow_state import (
     extract_concrete_slot,
 )
 from .models import DecisionKind, PolicyDecision
+
+
+DecisionOverlay = Callable[
+    [
+        tuple[str, ...],
+        str | None,
+        PolicyDecision,
+        FlowSnapshot,
+    ],
+    PolicyDecision,
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,9 +44,11 @@ class SchedulingFlowController:
         *,
         coalescer: ConversationBurstCoalescer | None = None,
         tracker: SchedulingFlowTracker | None = None,
+        decision_overlay: DecisionOverlay | None = None,
     ) -> None:
         self._coalescer = coalescer or ConversationBurstCoalescer()
         self._tracker = tracker or SchedulingFlowTracker()
+        self._decision_overlay = decision_overlay
 
     @property
     def tracker(self) -> SchedulingFlowTracker:
@@ -77,13 +90,26 @@ class SchedulingFlowController:
         # Trailing small-talk or intake wording in the same stabilized
         # Flux burst must not generate another patient response.
         if observed.complete:
+            completion_decision = PolicyDecision(
+                DecisionKind.WAIT,
+                reason="booking_confirmation",
+            )
+
+            # Allow an active adversarial persona to observe that PGAI
+            # completed a transaction early. A well-behaved persona overlay
+            # leaves this authoritative WAIT unchanged.
+            if self._decision_overlay is not None:
+                completion_decision = self._decision_overlay(
+                    source,
+                    None,
+                    completion_decision,
+                    observed,
+                )
+
             return FlowDecision(
                 source_turns=source,
                 actionable_turn=None,
-                decision=PolicyDecision(
-                    DecisionKind.WAIT,
-                    reason="booking_confirmation",
-                ),
+                decision=completion_decision,
                 before=before,
                 after=observed,
             )
@@ -93,10 +119,22 @@ class SchedulingFlowController:
         if relaxation_prompt_seen:
             self._tracker.relax_day_constraint_for_afternoon()
 
-        self._tracker.apply_decision(coalesced.decision)
+        effective_decision = coalesced.decision
+
+        # Persona testing happens before the durable flow tracker records what
+        # the patient communicated. Default None preserves baseline behavior.
+        if self._decision_overlay is not None:
+            effective_decision = self._decision_overlay(
+                coalesced.source_turns,
+                coalesced.actionable_turn,
+                effective_decision,
+                self._tracker.snapshot(),
+            )
+
+        self._tracker.apply_decision(effective_decision)
 
         if (
-            coalesced.decision.reason
+            effective_decision.reason
             == "compatible_concrete_slot_offered"
         ):
             slot_source = (
@@ -117,7 +155,7 @@ class SchedulingFlowController:
         return FlowDecision(
             source_turns=coalesced.source_turns,
             actionable_turn=coalesced.actionable_turn,
-            decision=coalesced.decision,
+            decision=effective_decision,
             before=before,
             after=after,
         )
