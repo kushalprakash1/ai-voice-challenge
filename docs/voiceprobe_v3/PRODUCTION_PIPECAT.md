@@ -32,7 +32,7 @@ the next speech response.
 
 ## Minimal pipeline
 
-`build_production_pipeline_task()` assembles:
+`build_production_pipeline_worker()` assembles:
 
 ```text
 transport.input()

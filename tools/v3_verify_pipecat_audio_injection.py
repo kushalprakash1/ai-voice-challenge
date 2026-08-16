@@ -7,7 +7,7 @@ import inspect
 
 from pipecat.frames.frames import InputAudioRawFrame
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 
 from voiceprobe.v3.production import build_production_flux_service
 
@@ -24,7 +24,7 @@ def main() -> None:
     )
 
     pipeline = Pipeline([bundle.service])
-    task = PipelineTask(
+    worker = PipelineWorker(
         pipeline,
         params=PipelineParams(
             audio_in_sample_rate=8000,
@@ -39,10 +39,10 @@ def main() -> None:
     print(" sample_rate:", frame.sample_rate)
     print(" num_channels:", frame.num_channels)
     print("Pipeline([DeepgramFluxSTTService]) instantiated: PASS")
-    print("PipelineTask instantiated: PASS")
+    print("PipelineWorker instantiated: PASS")
     print(
-        "PipelineTask.queue_frame is coroutine:",
-        inspect.iscoroutinefunction(task.queue_frame),
+        "PipelineWorker.queue_frames is coroutine:",
+        inspect.iscoroutinefunction(worker.queue_frames),
     )
     print("No PipelineRunner started; no Deepgram websocket was opened.")
 

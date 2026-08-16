@@ -70,7 +70,7 @@ class ProductionFluxBundle:
 @dataclass(frozen=True, slots=True)
 class ProductionPipelineBundle:
     pipeline: Any
-    task: Any
+    worker: Any
     lifecycle_processor: Any
 
 
@@ -111,7 +111,7 @@ def build_production_flux_service(
 
 
 class PipecatRuntimeBridge:
-    """Connect VoiceProbe runtime decisions to a Pipecat PipelineTask."""
+    """Connect VoiceProbe runtime decisions to a Pipecat PipelineWorker."""
 
     def __init__(
         self,
@@ -122,7 +122,7 @@ class PipecatRuntimeBridge:
         config.validate()
 
         self._config = config
-        self._task: Any | None = None
+        self._worker: Any | None = None
         self._queued_speech_count = 0
         self._tts_frame_factory = tts_frame_factory or _default_tts_frame_factory
 
@@ -144,15 +144,15 @@ class PipecatRuntimeBridge:
         return self._queued_speech_count
 
     @property
-    def task_bound(self) -> bool:
-        return self._task is not None
+    def worker_bound(self) -> bool:
+        return self._worker is not None
 
-    def bind_task(self, task: Any) -> None:
-        if not hasattr(task, "queue_frame"):
-            raise TypeError("Pipecat task must provide queue_frame(frame)")
-        if self._task is not None and self._task is not task:
-            raise RuntimeError("PipecatRuntimeBridge is already bound to another task")
-        self._task = task
+    def bind_worker(self, worker: Any) -> None:
+        if not hasattr(worker, "queue_frames"):
+            raise TypeError("Pipecat worker must provide queue_frames(frames)")
+        if self._worker is not None and self._worker is not worker:
+            raise RuntimeError("PipecatRuntimeBridge is already bound to another worker")
+        self._worker = worker
 
     def attach_flux(self, stt_service: Any) -> None:
         self._runtime.attach_flux(stt_service)
@@ -164,9 +164,9 @@ class PipecatRuntimeBridge:
         if not result.response_ready:
             return
 
-        if self._task is None:
+        if self._worker is None:
             raise RuntimeError(
-                "A response became ready before the Pipecat task was bound"
+                "A response became ready before the Pipecat worker was bound"
             )
 
         # Busy begins before TTS synthesis is queued, so any remote speech
@@ -174,7 +174,7 @@ class PipecatRuntimeBridge:
         self._runtime.mark_response_started()
 
         frame = self._tts_frame_factory(result.decision.text)
-        maybe = self._task.queue_frame(frame)
+        maybe = self._worker.queue_frames([frame])
 
         if inspect.isawaitable(maybe):
             await maybe
@@ -229,7 +229,7 @@ def build_tts_lifecycle_processor(
     return VoiceProbeTTSLifecycleProcessor()
 
 
-def build_production_pipeline_task(
+def build_production_pipeline_worker(
     *,
     transport: Any,
     stt_service: Any,
@@ -238,10 +238,10 @@ def build_production_pipeline_task(
     enable_metrics: bool = True,
     enable_usage_metrics: bool = True,
 ) -> ProductionPipelineBundle:
-    """Build the minimal deterministic Pipecat pipeline for VoiceProbe v3."""
+    """Build the minimal deterministic Pipecat pipeline worker for VoiceProbe v3."""
 
     from pipecat.pipeline.pipeline import Pipeline
-    from pipecat.pipeline.task import PipelineParams, PipelineTask
+    from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 
     lifecycle = build_tts_lifecycle_processor(bridge)
 
@@ -255,7 +255,7 @@ def build_production_pipeline_task(
         ]
     )
 
-    task = PipelineTask(
+    worker = PipelineWorker(
         pipeline,
         params=PipelineParams(
             audio_in_sample_rate=bridge.config.sample_rate,
@@ -265,11 +265,11 @@ def build_production_pipeline_task(
         ),
     )
 
-    bridge.bind_task(task)
+    bridge.bind_worker(worker)
     bridge.attach_flux(stt_service)
 
     return ProductionPipelineBundle(
         pipeline=pipeline,
-        task=task,
+        worker=worker,
         lifecycle_processor=lifecycle,
     )

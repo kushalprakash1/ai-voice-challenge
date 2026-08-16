@@ -13,12 +13,12 @@ from voiceprobe.v3.production import (
 )
 
 
-class FakeTask:
+class FakeWorker:
     def __init__(self):
         self.frames = []
 
-    async def queue_frame(self, frame):
-        self.frames.append(frame)
+    async def queue_frames(self, frames):
+        self.frames.extend(frames)
 
 
 async def main() -> None:
@@ -27,8 +27,8 @@ async def main() -> None:
     )
 
     bridge = PipecatRuntimeBridge()
-    task = FakeTask()
-    bridge.bind_task(task)
+    worker = FakeWorker()
+    bridge.bind_worker(worker)
     bridge.attach_flux(bundle.service)
 
     lifecycle = build_tts_lifecycle_processor(bridge)
@@ -37,7 +37,7 @@ async def main() -> None:
         ["What is the reason for your visit?"]
     )
 
-    frame = task.frames[0]
+    frame = worker.frames[0]
 
     print("DeepgramFluxSTTService instantiated: PASS")
     print("VoiceProbe event handlers attached: PASS")

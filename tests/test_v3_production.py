@@ -16,12 +16,12 @@ class FakeSpeechFrame:
         self.text = text
 
 
-class FakeTask:
+class FakeWorker:
     def __init__(self) -> None:
         self.frames = []
 
-    async def queue_frame(self, frame) -> None:
-        self.frames.append(frame)
+    async def queue_frames(self, frames) -> None:
+        self.frames.extend(frames)
 
 
 class FakeFlux:
@@ -45,9 +45,9 @@ def make_bridge(*, grace_ms: float = 0.0):
         config=config,
         tts_frame_factory=FakeSpeechFrame,
     )
-    task = FakeTask()
-    bridge.bind_task(task)
-    return bridge, task
+    worker = FakeWorker()
+    bridge.bind_worker(worker)
+    return bridge, worker
 
 
 def test_production_flux_config_is_frozen_to_proven_settings() -> None:
@@ -73,18 +73,18 @@ def test_production_config_rejects_eager_eot() -> None:
 
 def test_bridge_queues_only_response_ready_decisions() -> None:
     async def scenario():
-        bridge, task = make_bridge()
+        bridge, worker = make_bridge()
 
         wait = await bridge.runtime.process_turns(["Thanks, Alex."])
         assert wait.decision.kind == DecisionKind.WAIT
-        assert task.frames == []
+        assert worker.frames == []
 
         answer = await bridge.runtime.process_turns(
             ["What is the reason for your visit?"]
         )
         assert answer.decision.kind == DecisionKind.ANSWER_COMPLAINT
-        assert len(task.frames) == 1
-        assert task.frames[0].text == "I have right shoulder pain."
+        assert len(worker.frames) == 1
+        assert worker.frames[0].text == "I have right shoulder pain."
         assert bridge.queued_speech_count == 1
 
     asyncio.run(scenario())
@@ -92,7 +92,7 @@ def test_bridge_queues_only_response_ready_decisions() -> None:
 
 def test_bridge_does_not_speak_unresolved_fallback() -> None:
     async def scenario():
-        bridge, task = make_bridge()
+        bridge, worker = make_bridge()
 
         result = await bridge.runtime.process_turns(
             ["Could you unpack the metaphysics of this appointment?"]
@@ -100,21 +100,21 @@ def test_bridge_does_not_speak_unresolved_fallback() -> None:
 
         assert result.decision.kind == DecisionKind.FALLBACK
         assert result.response_ready is False
-        assert task.frames == []
+        assert worker.frames == []
 
     asyncio.run(scenario())
 
 
 def test_bridge_marks_busy_before_tts_and_drains_after_tts_stops() -> None:
     async def scenario():
-        bridge, task = make_bridge()
+        bridge, worker = make_bridge()
         stt = FakeFlux()
         bridge.attach_flux(stt)
 
         await bridge.runtime.process_turns(
             ["What is the reason for your visit?"]
         )
-        assert len(task.frames) == 1
+        assert len(worker.frames) == 1
 
         # While the first response is waiting for TTS completion, the remote
         # provider speaks again. It must be preserved, not answered in parallel.
@@ -126,20 +126,20 @@ def test_bridge_marks_busy_before_tts_and_drains_after_tts_stops() -> None:
             ),
         )
 
-        assert len(task.frames) == 1
+        assert len(worker.frames) == 1
         assert bridge.runtime.ingress.burst_buffer.pending_turns
 
         await bridge.on_tts_stopped()
 
-        assert len(task.frames) == 2
-        assert task.frames[1].text == "First available is fine."
+        assert len(worker.frames) == 2
+        assert worker.frames[1].text == "First available is fine."
 
     asyncio.run(scenario())
 
 
 def test_previous_call_short_continuation_is_one_live_decision() -> None:
     async def scenario():
-        bridge, task = make_bridge(grace_ms=60_000)
+        bridge, worker = make_bridge(grace_ms=60_000)
         stt = FakeFlux()
         bridge.attach_flux(stt)
 
@@ -157,12 +157,12 @@ def test_previous_call_short_continuation_is_one_live_decision() -> None:
         await stt.handlers["on_start_of_turn"](stt, "preference")
         await stt.handlers["on_end_of_turn"](stt, continuation)
 
-        assert task.frames == []
+        assert worker.frames == []
 
         await bridge.runtime.ingress.flush_stabilized_pending()
 
-        assert len(task.frames) == 1
-        assert task.frames[0].text == (
+        assert len(worker.frames) == 1
+        assert worker.frames[0].text == (
             "Those times don't work for me. "
             "Do you have anything Friday afternoon?"
         )
@@ -170,13 +170,13 @@ def test_previous_call_short_continuation_is_one_live_decision() -> None:
     asyncio.run(scenario())
 
 
-def test_bridge_rejects_task_without_queue_frame() -> None:
+def test_bridge_rejects_worker_without_queue_frames() -> None:
     bridge = PipecatRuntimeBridge(
         tts_frame_factory=FakeSpeechFrame,
     )
 
     with pytest.raises(TypeError):
-        bridge.bind_task(object())
+        bridge.bind_worker(object())
 
 
 def test_clear_pending_returns_stabilized_text() -> None:
