@@ -435,3 +435,66 @@ def test_assertion_and_objective_request_can_coexist() -> None:
         frame.stated_facts[0].fact.value
         == "date_of_birth"
     )
+
+
+def test_turn_frame_can_represent_optional_workflow_proposal() -> None:
+    frame = TurnFrame.model_validate(
+        {
+            "speech_act": "question",
+            "workflow": "profile_setup",
+            "requested_action": "grant_permission",
+            "response_required": True,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "stated_facts": [],
+            "proposed_workflow": {
+                "kind": "profile_setup",
+                "description": "create a demo patient profile",
+                "requirement": "optional",
+            },
+            "appointment_options": [],
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    assert (
+        frame.requested_action.value
+        == "grant_permission"
+    )
+
+    assert frame.proposed_workflow is not None
+
+    assert (
+        frame.proposed_workflow.kind.value
+        == "profile_setup"
+    )
+
+    assert (
+        frame.proposed_workflow.requirement.value
+        == "optional"
+    )
+
+
+def test_normal_availability_permission_needs_no_side_workflow() -> None:
+    frame = TurnFrame.model_validate(
+        {
+            "speech_act": "question",
+            "workflow": "scheduling",
+            "requested_action": "grant_permission",
+            "response_required": True,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "stated_facts": [],
+            "proposed_workflow": None,
+            "appointment_options": [],
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    assert frame.proposed_workflow is None

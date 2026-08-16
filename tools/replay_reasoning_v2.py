@@ -302,6 +302,17 @@ def main() -> None:
                 )
 
                 print(
+                    "  proposed_workflow=",
+                    (
+                        frame.proposed_workflow.model_dump(
+                            mode="json",
+                        )
+                        if frame.proposed_workflow is not None
+                        else None
+                    ),
+                )
+
+                print(
                     "  fact_conflicts   =",
                     [
                         {

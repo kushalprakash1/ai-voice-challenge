@@ -47,6 +47,14 @@ class WorkflowKind(StrEnum):
     UNKNOWN = "unknown"
 
 
+class WorkflowRequirement(StrEnum):
+    """How strongly the remote agent says a workflow step is required."""
+
+    OPTIONAL = "optional"
+    REQUIRED = "required"
+    UNKNOWN = "unknown"
+
+
 class RequestedAction(StrEnum):
     """What the remote agent expects from the caller next."""
 
@@ -101,6 +109,35 @@ class RequestedFact(StrEnum):
     PHONE_NUMBER = "phone_number"
     EMAIL = "email"
     ADDRESS = "address"
+
+
+class WorkflowProposal(BaseModel):
+    """A workflow or sub-workflow proposed by the remote agent.
+
+    This describes what the remote agent proposed.
+
+    It does NOT decide whether the caller should accept it.
+    Relevance to the caller's objective belongs to the planner.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+
+    kind: WorkflowKind
+
+    # Concise source-grounded description of the proposed operation.
+    # Examples:
+    #   "create a demo patient profile"
+    #   "verify identity"
+    #   "complete intake paperwork"
+    description: str = Field(
+        min_length=1,
+    )
+
+    requirement: WorkflowRequirement = (
+        WorkflowRequirement.UNKNOWN
+    )
 
 
 class AgentFactAssertion(BaseModel):
@@ -174,6 +211,13 @@ class TurnFrame(BaseModel):
     stated_facts: list[AgentFactAssertion] = Field(
         default_factory=list,
     )
+
+    # Optional workflow/sub-workflow the remote side is proposing.
+    #
+    # This remains separate from the primary workflow label because a
+    # scheduling conversation can temporarily propose profile setup,
+    # identity verification, paperwork, or another supporting workflow.
+    proposed_workflow: WorkflowProposal | None = None
 
     appointment_options: list[SlotOption] = Field(
         default_factory=list,

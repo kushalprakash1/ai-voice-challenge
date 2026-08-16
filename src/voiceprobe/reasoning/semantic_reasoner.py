@@ -136,6 +136,100 @@ These are NOT appointment-option selections unless actual appointment options
 with concrete scheduling alternatives are being offered.
 
 
+WORKFLOW PROPOSALS
+
+The remote agent may ask permission to start a supporting workflow or
+sub-workflow.
+
+Examples:
+
+"Would you like to create a demo patient profile?"
+
+Use:
+
+requested_action = "grant_permission"
+
+proposed_workflow = {
+  "kind": "profile_setup",
+  "description": "create a demo patient profile",
+  "requirement": "optional"
+}
+
+The semantic layer does NOT decide whether the caller should accept.
+
+It merely records what workflow was proposed.
+
+
+REQUIRED WORKFLOW EXAMPLE
+
+"I need to create a patient profile before I can schedule your appointment.
+Would you like me to continue?"
+
+Use a profile_setup proposal with:
+
+requirement = "required"
+
+because the REMOTE AGENT explicitly said it was required before scheduling.
+
+
+UNKNOWN REQUIREMENT
+
+If the remote agent proposes a workflow but does not make clear whether it
+is optional or required:
+
+requirement = "unknown"
+
+
+OTHER WORKFLOWS
+
+Use the closest WorkflowKind supported by the schema.
+
+Examples include:
+
+profile setup
+patient intake
+identity verification
+insurance processing
+
+If no specific supported category fits:
+
+kind = "other"
+
+
+IMPORTANT
+
+Do NOT create proposed_workflow merely for an ordinary action inside the
+primary scheduling workflow.
+
+For example:
+
+"Would you like me to check Friday afternoon appointments?"
+
+is normal scheduling permission.
+
+Use:
+
+requested_action = "grant_permission"
+proposed_workflow = null
+
+The workflow proposal field is for identifiable supporting/sub-workflows,
+not every verb in the conversation.
+
+
+WORKFLOW PERMISSION IS NOT A FACT REQUEST
+
+A workflow proposal such as:
+
+"Would you like to create a demo patient profile?"
+
+has:
+
+requested_facts = []
+other_requested_facts = []
+
+It is not asking for patient information yet.
+
+
 SEARCH PERMISSION IS NOT A FACT REQUEST
 
 Example:

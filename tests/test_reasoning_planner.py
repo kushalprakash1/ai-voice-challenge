@@ -715,3 +715,122 @@ def test_constraint_validator_lists_compatible_options() -> None:
             2,
         )
     )
+
+
+def test_workflow_proposal_reaches_planner_context() -> None:
+    """Planner must reason over the proposed workflow, not raw phrase rules."""
+
+    captured: dict[str, object] = {}
+
+    response_plan = {
+        "action": "grant_permission",
+        "selected_option_index": None,
+        "facts_to_answer": [],
+        "reason_code": "workflow_enables_objective",
+        "confidence": 1.0,
+    }
+
+    def handler(
+        request: httpx.Request,
+    ) -> httpx.Response:
+
+        captured["payload"] = json.loads(
+            request.content
+        )
+
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "content": json.dumps(
+                        response_plan
+                    )
+                }
+            },
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            handler
+        )
+    )
+
+    planner = QwenPatientPlanner(
+        model="qwen3:14b",
+        url="http://ollama.test/api/chat",
+        client=client,
+    )
+
+    turn = TurnFrame.model_validate(
+        {
+            "speech_act": "question",
+            "workflow": "profile_setup",
+            "requested_action": "grant_permission",
+            "response_required": True,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "stated_facts": [],
+            "proposed_workflow": {
+                "kind": "profile_setup",
+                "description": "create a demo patient profile",
+                "requirement": "optional",
+            },
+            "appointment_options": [],
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    try:
+        plan, violations = planner.plan(
+            world=build_world_model(
+                get_scenario(
+                    "autonomous-phone-diagnostic"
+                )
+            ),
+            turn=turn,
+        )
+    finally:
+        planner.close()
+        client.close()
+
+    assert (
+        plan.action
+        is PatientActionKind.GRANT_PERMISSION
+    )
+
+    assert violations == ()
+
+    payload = captured["payload"]
+
+    assert isinstance(
+        payload,
+        dict,
+    )
+
+    messages = payload["messages"]
+
+    assert isinstance(
+        messages,
+        list,
+    )
+
+    context = json.loads(
+        messages[-1]["content"]
+    )
+
+    proposal = (
+        context[
+            "remote_turn"
+        ][
+            "proposed_workflow"
+        ]
+    )
+
+    assert proposal == {
+        "kind": "profile_setup",
+        "description": "create a demo patient profile",
+        "requirement": "optional",
+    }
