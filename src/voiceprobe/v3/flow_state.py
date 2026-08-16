@@ -242,6 +242,14 @@ class SchedulingFlowTracker:
         elif kind == DecisionKind.ANSWER_PROVIDER_PREFERENCE:
             self._communicate(FlowStage.PROVIDER)
 
+        elif kind == DecisionKind.SEARCH_ALTERNATE_DAY_AFTERNOON:
+            # Live run 4: the remote side explicitly reported that the
+            # requested Friday afternoon was unavailable and offered an
+            # alternate-day search. Relax only the day constraint.
+            # Afternoon remains mandatory.
+            self._state.allow_earlier_week_afternoons = True
+            self._communicate(FlowStage.DATE_TIME)
+
         elif kind in {
             DecisionKind.DECLINE_INCOMPATIBLE_OFFER,
             DecisionKind.GRANT_PERMISSION,

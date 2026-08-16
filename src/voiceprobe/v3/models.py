@@ -18,6 +18,7 @@ class DecisionKind(StrEnum):
     CORRECT_AND_STATE_OBJECTIVE = "correct_and_state_objective"
     GRANT_PERMISSION = "grant_permission"
     CHOOSE_SEARCH_BRANCH = "choose_search_branch"
+    SEARCH_ALTERNATE_DAY_AFTERNOON = "search_alternate_day_afternoon"
     DECLINE_INCOMPATIBLE_OFFER = "decline_incompatible_offer"
     STATE_OBJECTIVE = "state_objective"
     CORRECT_FACT = "correct_fact"

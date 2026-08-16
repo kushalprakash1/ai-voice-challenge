@@ -1,6 +1,6 @@
 # Live Flux continuation stabilization
 
-The 600 ms continuation rule proven by the historical audio replays is now part
+The historical audio replays established a 600 ms default continuation rule. Live production now uses a 900 ms continuation window, while that 600 ms rule remains the generic/offline baseline. The stabilization behavior is now part
 of the live `FluxIngressController`.
 
 ## Behavior
@@ -31,7 +31,7 @@ decision followed by a spurious fallback.
 
 ## Latency tradeoff
 
-The live path intentionally pays up to 600 ms of turn-stabilization latency.
+The current production live path intentionally pays up to 900 ms of turn-stabilization latency. Generic/offline stabilization retains the 600 ms default.
 This is a correctness-first setting derived from the recorded calls. It remains
 far below the multi-second reasoning delays of the previous architecture.
 

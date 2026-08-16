@@ -10,7 +10,7 @@ VoiceProbe v3 now has a single production-facing assembly module.
 - EndOfTurn threshold: `0.85`
 - EndOfTurn timeout: `5000 ms`
 - EagerEndOfTurn: disabled
-- VoiceProbe continuation grace: `600 ms`
+- VoiceProbe production continuation grace: `900 ms`
 - keyterms: Pivot Point, Alex Morgan, Blue Cross, new patient consultation
 
 The settings are represented by `ProductionFluxConfig` and validated before a

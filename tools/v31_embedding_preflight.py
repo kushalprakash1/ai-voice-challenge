@@ -66,6 +66,14 @@ CASES = (
         "Nothing is open then. Would you like me to broaden the search?",
     ),
     (
+        "scheduling_complex",
+        (
+            "There are no Friday afternoon openings available. "
+            "Would you like to look at afternoon slots on another day "
+            "such as Monday or Tuesday next week?"
+        ),
+    ),
+    (
         "unknown",
         "Do you need a referral from your primary doctor?",
     ),

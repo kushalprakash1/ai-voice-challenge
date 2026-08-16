@@ -42,7 +42,10 @@ class ProductionFluxConfig:
     eot_threshold: float = 0.85
     eot_timeout_ms: int = 5000
     eager_eot_threshold: float | None = None
-    continuation_grace_ms: float = DEFAULT_CONTINUATION_GRACE_MS
+    # Live run 4: the remote synthetic agent occasionally continued
+    # speaking after Flux's earlier boundary. Keep the generic runtime
+    # default unchanged, but give live production more continuation time.
+    continuation_grace_ms: float = 900.0
     keyterms: tuple[str, ...] = DEFAULT_KEYTERMS
     flux_encoding: str = "linear16"
 

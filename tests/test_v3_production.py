@@ -60,7 +60,7 @@ def test_production_flux_config_is_frozen_to_proven_settings() -> None:
     assert config.eot_threshold == 0.85
     assert config.eot_timeout_ms == 5000
     assert config.eager_eot_threshold is None
-    assert config.continuation_grace_ms == 600.0
+    assert config.continuation_grace_ms == 900.0
     assert config.flux_encoding == "linear16"
     assert "Pivot Point" in config.keyterms
     assert "Blue Cross" in config.keyterms
@@ -219,5 +219,102 @@ def test_clear_pending_returns_stabilized_text() -> None:
 
         assert cleared == ("What is the reason for your visit?",)
         assert bridge.runtime.ingress.pending_stabilized_turns == ()
+
+    asyncio.run(scenario())
+
+
+def test_production_grace_restarts_on_remote_continuation(
+    monkeypatch,
+) -> None:
+    import asyncio
+
+    import voiceprobe.v3.ingress as ingress
+
+    real_sleep = asyncio.sleep
+    requested_delays = []
+    gates = []
+
+    async def controlled_sleep(seconds):
+        if seconds == 0.9:
+            requested_delays.append(seconds)
+
+            gate = asyncio.Event()
+            gates.append(gate)
+
+            await gate.wait()
+            return
+
+        await real_sleep(seconds)
+
+    monkeypatch.setattr(
+        ingress.asyncio,
+        "sleep",
+        controlled_sleep,
+    )
+
+    async def scenario():
+        bridge, worker = make_bridge(
+            grace_ms=(
+                DEFAULT_PRODUCTION_FLUX_CONFIG
+                .continuation_grace_ms
+            )
+        )
+
+        stt = FakeFlux()
+        bridge.attach_flux(stt)
+
+        first = (
+            "We have openings for new patient consultation on Friday, "
+            "August twenty first. The available times are nine AM, "
+            "nine forty five AM, and ten thirty AM. "
+            "Would any of these work for your Friday afternoon?"
+        )
+
+        continuation = (
+            "preference, or would you like to look at "
+            "later dates or times?"
+        )
+
+        # First apparent EOT arms the production grace timer.
+        await stt.handlers["on_end_of_turn"](
+            stt,
+            first,
+        )
+
+        await real_sleep(0)
+
+        assert requested_delays == [0.9]
+        assert worker.frames == []
+
+        # The remote side resumes before the grace period is released.
+        # This must cancel the first pending flush.
+        await stt.handlers["on_start_of_turn"](
+            stt,
+            "preference",
+        )
+
+        await stt.handlers["on_end_of_turn"](
+            stt,
+            continuation,
+        )
+
+        await real_sleep(0)
+
+        # A new full grace period is now armed.
+        assert requested_delays == [0.9, 0.9]
+        assert worker.frames == []
+
+        # Release only the latest timer.
+        gates[-1].set()
+
+        for _ in range(8):
+            await real_sleep(0)
+
+        assert len(worker.frames) == 1
+
+        assert worker.frames[0].text == (
+            "Those times don't work for me. "
+            "Do you have anything Friday afternoon?"
+        )
 
     asyncio.run(scenario())

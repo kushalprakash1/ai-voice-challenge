@@ -527,6 +527,53 @@ class LocalQwenIntentClassifier:
         )
 
 
+_ALTERNATE_WEEKDAY_RE = re.compile(
+    r"\b(monday|tuesday|wednesday|thursday)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _complex_scheduling_action(
+    agent_turn: str,
+    snapshot: FlowSnapshot,
+    confidence: float,
+) -> PolicyDecision:
+    """Resolve an understood scheduling-choice turn without clarification.
+
+    Semantic perception has already established that this is a scheduling
+    choice. This layer only grounds the patient action in explicit remote
+    evidence and the durable scheduling state.
+    """
+
+    offered_day = None
+
+    match = _ALTERNATE_WEEKDAY_RE.search(agent_turn)
+
+    if match is not None:
+        offered_day = match.group(1).title()
+
+    if offered_day is not None:
+        response = f"Please check {offered_day} afternoon."
+
+    elif snapshot.allow_earlier_week_afternoons:
+        response = (
+            "Yes, please check the first available weekday afternoon."
+        )
+
+    else:
+        # The remote side has offered a broader search but no concrete
+        # alternate weekday was recoverable. Preserve the requested
+        # afternoon constraint and authorize only a weekday search.
+        response = "Please check another weekday afternoon."
+
+    return PolicyDecision(
+        DecisionKind.SEARCH_ALTERNATE_DAY_AFTERNOON,
+        text=response,
+        reason="semantic_v31:choose_alternate_day_afternoon",
+        confidence=confidence,
+    )
+
+
 class V31SemanticRouter:
     """Production fallback router with deterministic grounding and loop control."""
 
@@ -655,6 +702,7 @@ class V31SemanticRouter:
         return self._decision_for_intent(
             classification=classification,
             agent_turn=agent_turn,
+            snapshot=snapshot,
         )
 
     def _decision_for_intent(
@@ -662,6 +710,7 @@ class V31SemanticRouter:
         *,
         classification: SemanticClassification,
         agent_turn: str,
+        snapshot: FlowSnapshot,
     ) -> PolicyDecision:
         intent = classification.intent
         facts = self._facts
@@ -827,11 +876,19 @@ class V31SemanticRouter:
             )
 
         if intent == SemanticIntent.SCHEDULING_COMPLEX:
-            return PolicyDecision(
-                DecisionKind.CLARIFY,
-                text="Could you restate the available appointment day and time?",
-                reason="semantic_v31:complex_scheduling_requires_explicit_details",
-                confidence=classification.confidence,
+            # The existing durable relaxation state is intentionally
+            # afternoon-specific. Do not apply it to morning/evening
+            # scenarios until alternate-day relaxation is generalized.
+            if _normalize(facts.preferred_time) != "afternoon":
+                return self._clarification(
+                    agent_turn,
+                    classification,
+                )
+
+            return _complex_scheduling_action(
+                agent_turn,
+                snapshot,
+                classification.confidence,
             )
 
         return self._clarification(agent_turn, classification)

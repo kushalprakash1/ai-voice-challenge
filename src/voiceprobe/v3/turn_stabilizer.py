@@ -5,7 +5,7 @@ hundreds of milliseconds later. VoiceProbe uses a small grace interval before
 speaking so those segments can be treated as one conversational burst.
 
 This module is transport-agnostic and is used by offline audio replay now. The
-same 600 ms rule is intended for the live Pipecat ingress adapter later.
+600 ms remains the generic/offline baseline. The production Pipecat ingress may deliberately configure a larger continuation window.
 """
 
 from __future__ import annotations
