@@ -293,11 +293,30 @@ _SLOT_TIME_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
+_SPOKEN_SLOT_TIME_RE = re.compile(
+    r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+    r"(?:\s+(?:fifteen|thirty|forty[\s-]?five))?"
+    r"\s+(?:a\.?m\.?|p\.?m\.?|am|pm)\b",
+    flags=re.IGNORECASE,
+)
 
-def _extract_concrete_slot(text: str) -> str | None:
+
+def extract_concrete_slot(text: str) -> str | None:
+    """Extract a concrete digit or common spoken appointment time."""
+
     match = _SLOT_TIME_RE.search(text)
 
-    if match is None:
-        return None
+    if match is not None:
+        return match.group(0)
 
-    return match.group(0)
+    spoken = _SPOKEN_SLOT_TIME_RE.search(text)
+
+    if spoken is not None:
+        return spoken.group(0)
+
+    return None
+
+
+def _extract_concrete_slot(text: str) -> str | None:
+    # Compatibility alias for the existing internal call site.
+    return extract_concrete_slot(text)

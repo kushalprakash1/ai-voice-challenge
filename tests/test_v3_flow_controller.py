@@ -84,3 +84,44 @@ def test_august_28_branch_keeps_datetime_progress_without_booking() -> None:
     assert FlowStage.DATE_TIME in result.after.communicated
     assert FlowStage.SLOT not in result.after.confirmed
     assert not result.after.complete
+
+def test_concrete_slot_acceptance_then_remote_confirmation_completes_flow() -> None:
+    controller = SchedulingFlowController()
+
+    accepted = controller.decide_burst(
+        [
+            (
+                "I have Friday at 2:30 PM with the first available provider. "
+                "Would that work for you?"
+            )
+        ]
+    )
+
+    assert accepted.decision.kind == DecisionKind.GRANT_PERMISSION
+    assert accepted.after.accepted_slot_text == "2:30 PM"
+    assert FlowStage.SLOT in accepted.after.communicated
+    assert not accepted.after.complete
+
+    confirmed = controller.decide_burst(
+        ["Great, you're confirmed for Friday at 2:30 PM."]
+    )
+
+    assert confirmed.decision.kind == DecisionKind.WAIT
+    assert confirmed.after.complete
+    assert FlowStage.CONFIRMATION in confirmed.after.confirmed
+    assert confirmed.after.accepted_slot_text == "2:30 PM"
+    assert confirmed.after.booking_confirmation_text is not None
+
+
+def test_spoken_slot_confirmation_completes_flow() -> None:
+    controller = SchedulingFlowController()
+
+    controller.decide_burst(
+        ["I can schedule you Friday at two thirty PM. Would that work?"]
+    )
+    confirmed = controller.decide_burst(
+        ["You're booked for Friday at two thirty PM."]
+    )
+
+    assert confirmed.after.complete
+    assert confirmed.after.accepted_slot_text.casefold() == "two thirty pm"

@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .coalescer import ConversationBurstCoalescer
-from .flow_state import FlowSnapshot, SchedulingFlowTracker
+from .flow_state import (
+    FlowSnapshot,
+    SchedulingFlowTracker,
+    extract_concrete_slot,
+)
 from .models import PolicyDecision
 
 
@@ -51,6 +55,24 @@ class SchedulingFlowController:
 
         coalesced = self._coalescer.coalesce(source)
         self._tracker.apply_decision(coalesced.decision)
+
+        if (
+            coalesced.decision.reason
+            == "compatible_concrete_slot_offered"
+        ):
+            slot_source = (
+                coalesced.actionable_turn
+                or " ".join(coalesced.source_turns)
+            )
+            slot_text = extract_concrete_slot(slot_source)
+
+            if slot_text is None:
+                raise ValueError(
+                    "Compatible concrete-slot decision had no extractable slot"
+                )
+
+            self._tracker.record_slot_acceptance(slot_text)
+
         after = self._tracker.snapshot()
 
         return FlowDecision(

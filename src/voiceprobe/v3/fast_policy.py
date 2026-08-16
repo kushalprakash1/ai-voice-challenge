@@ -24,6 +24,44 @@ def _contains_any(text: str, phrases: tuple[str, ...]) -> bool:
     return any(phrase in text for phrase in phrases)
 
 
+_DIGIT_PM_RE = re.compile(
+    r"\b(?:1[0-2]|0?[1-9])"
+    r"(?::[0-5]\d|\.[0-5]\d)?"
+    r"\s*(?:p\.?m\.?|pm)\b",
+    flags=re.IGNORECASE,
+)
+
+_SPOKEN_PM_RE = re.compile(
+    r"\b(?:one|two|three|four|five)"
+    r"(?:\s+(?:fifteen|thirty|forty[\s-]?five))?"
+    r"\s+(?:p\.?m\.?|pm)\b",
+    flags=re.IGNORECASE,
+)
+
+_OTHER_WEEKDAYS = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "saturday",
+    "sunday",
+)
+
+
+def _extract_offered_pm_slot(text: str) -> str | None:
+    digit = _DIGIT_PM_RE.search(text)
+
+    if digit is not None:
+        return digit.group(0)
+
+    spoken = _SPOKEN_PM_RE.search(text)
+
+    if spoken is not None:
+        return spoken.group(0)
+
+    return None
+
+
 def _is_obvious_fragment(text: str) -> bool:
     stripped = text.strip()
     if not stripped:
@@ -381,6 +419,69 @@ class RoutineSchedulingPolicy:
                     "Do you have anything Friday afternoon?"
                 ),
                 reason="morning_offer_conflicts_with_afternoon_constraint",
+            )
+
+        # Concrete slot acceptance was not exercised by the two historical
+        # recordings because both ended before booking. Treat it as a first-class
+        # scheduling primitive rather than a generic yes/no response.
+        offered_pm_slot = _extract_offered_pm_slot(raw)
+        slot_offer_cue = _contains_any(
+            text,
+            (
+                "does that work",
+                "would that work",
+                "work for you",
+                "would you like",
+                "can book",
+                "can schedule",
+                "available at",
+                "opening at",
+                "appointment at",
+                "slot at",
+            ),
+        )
+
+        if (
+            offered_pm_slot is not None
+            and _contains_any(text, _OTHER_WEEKDAYS)
+            and slot_offer_cue
+        ):
+            return PolicyDecision(
+                DecisionKind.DECLINE_INCOMPATIBLE_OFFER,
+                text=(
+                    "That day doesn't work for me. "
+                    "I need a Friday afternoon appointment."
+                ),
+                reason="non_friday_offer_conflicts_with_day_constraint",
+            )
+
+        booking_confirmation = (
+            offered_pm_slot is not None
+            and _contains_any(
+                text,
+                (
+                    "scheduled",
+                    "booked",
+                    "appointment is confirmed",
+                    "appointment has been confirmed",
+                    "you're confirmed",
+                    "you are confirmed",
+                    "reserved",
+                ),
+            )
+        )
+
+        if booking_confirmation:
+            return PolicyDecision(
+                DecisionKind.WAIT,
+                reason="booking_confirmation",
+            )
+
+        if offered_pm_slot is not None and slot_offer_cue:
+            return PolicyDecision(
+                DecisionKind.GRANT_PERMISSION,
+                text="Yes, that works for me. Please book it.",
+                reason="compatible_concrete_slot_offered",
             )
 
         if text.startswith("thanks for confirming") and "?" not in raw:

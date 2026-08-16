@@ -37,3 +37,17 @@ The fast policy now recognizes provider-choice turns structurally when they
 mention first available, identify a provider/doctor/physician option, and ask
 for a preference/choice. No provider names are encoded.
 
+## Concrete-slot completion gate
+
+The historical recordings end before an actual appointment slot is accepted
+and confirmed, so replay success alone cannot prove the final booking stage.
+Before Asterisk integration, VoiceProbe v3 now treats a concrete compatible PM
+slot offer as an explicit booking action: it responds with a booking instruction
+and stores the exact offered time in structured flow state. Explicit non-Friday
+offers are declined.
+
+A later remote statement that the concrete slot is booked, scheduled, confirmed,
+or reserved is non-actionable speech (WAIT) but confirms the SLOT and
+CONFIRMATION stages. Only that explicit remote confirmation makes the flow
+complete. This gives the Asterisk adapter an evidence-backed success signal.
+

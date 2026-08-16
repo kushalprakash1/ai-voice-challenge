@@ -57,3 +57,42 @@ def test_provider_choice_handles_generic_offer_first_available_wording() -> None
     assert decision.text == "First available is fine."
     assert decision.reason == "provider_preference_requested"
 
+def test_compatible_concrete_friday_afternoon_slot_is_accepted() -> None:
+    decision = RoutineSchedulingPolicy().decide(
+        (
+            "I have Friday at 2:30 PM with the first available provider. "
+            "Would that work for you?"
+        )
+    )
+
+    assert decision.kind.value == "grant_permission"
+    assert decision.text == "Yes, that works for me. Please book it."
+    assert decision.reason == "compatible_concrete_slot_offered"
+
+
+def test_concrete_non_friday_slot_is_declined() -> None:
+    decision = RoutineSchedulingPolicy().decide(
+        "I have Thursday at 2:30 PM. Would that work for you?"
+    )
+
+    assert decision.kind.value == "decline_incompatible_offer"
+    assert "Friday afternoon" in decision.text
+
+
+def test_booking_confirmation_with_concrete_slot_does_not_fallback() -> None:
+    decision = RoutineSchedulingPolicy().decide(
+        "Great, you're confirmed for Friday at 2:30 PM."
+    )
+
+    assert decision.kind.value == "wait"
+    assert decision.reason == "booking_confirmation"
+
+
+def test_spoken_pm_slot_is_accepted() -> None:
+    decision = RoutineSchedulingPolicy().decide(
+        "I can schedule you Friday at two thirty PM. Would that work?"
+    )
+
+    assert decision.kind.value == "grant_permission"
+    assert decision.reason == "compatible_concrete_slot_offered"
+
