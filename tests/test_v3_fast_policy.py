@@ -167,3 +167,33 @@ def test_weekend_pm_is_not_accepted_by_earlier_week_relaxation() -> None:
     assert decision.kind.value == "decline_incompatible_offer"
     assert decision.reason == "offer_outside_relaxed_earlier_week_window"
 
+def test_live_run2_wrong_dob_trailing_comma_is_actionable() -> None:
+    decision = RoutineSchedulingPolicy().decide(
+        (
+            "Your patient profile is set up, and your date of birth is "
+            "July fourth two thousand for demo purposes. "
+            "How may I help you today,"
+        )
+    )
+
+    assert decision.kind.value == "correct_and_state_objective"
+    assert decision.reason == "correct_remote_fact_then_answer_open_intent"
+    assert "April 12, 1998" in decision.text
+    assert "Friday afternoon" in decision.text
+
+
+def test_live_run2_can_i_help_you_today_restates_objective() -> None:
+    decision = RoutineSchedulingPolicy().decide("can I help you today?")
+
+    assert decision.kind.value == "state_objective"
+    assert decision.reason == "open_ended_intent_question"
+    assert "Friday afternoon" in decision.text
+
+
+def test_live_run2_presence_check_recovers_with_objective() -> None:
+    decision = RoutineSchedulingPolicy().decide("Are you still there?")
+
+    assert decision.kind.value == "state_objective"
+    assert decision.reason == "presence_check_restate_objective"
+    assert "I'm here" in decision.text
+    assert "Friday afternoon" in decision.text

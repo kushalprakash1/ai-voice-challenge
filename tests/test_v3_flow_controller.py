@@ -207,3 +207,51 @@ def test_relaxed_day_never_relaxes_afternoon_constraint() -> None:
     assert "afternoon" in result.decision.text.casefold()
     assert result.after.accepted_slot_text is None
     assert not result.after.complete
+
+def test_live_run2_split_open_intent_recovers_without_fallback() -> None:
+    controller = SchedulingFlowController()
+
+    first = controller.decide_burst(
+        [
+            (
+                "This call may be recorded for quality and training purposes. "
+                "Thank you for calling Pivot Point Orthopedics. "
+                "Would you like to create a demo patient profile?"
+            ),
+            "I just need your first and last name to get started.",
+        ]
+    )
+    assert first.decision.kind == DecisionKind.ANSWER_FACT
+
+    second = controller.decide_burst(
+        [
+            (
+                "Your patient profile is set up, and your date of birth is "
+                "July fourth two thousand for demo purposes. "
+                "How may I help you today,"
+            )
+        ]
+    )
+
+    assert second.decision.kind == DecisionKind.CORRECT_AND_STATE_OBJECTIVE
+    assert second.decision.reason == "correct_remote_fact_then_answer_open_intent"
+    assert FlowStage.DOB in second.after.communicated
+    assert FlowStage.DATE_TIME in second.after.communicated
+
+    third = controller.decide_burst(
+        [
+            "Thanks, Alex.",
+            "can I help you today?",
+        ]
+    )
+
+    assert third.decision.kind == DecisionKind.STATE_OBJECTIVE
+    assert third.decision.reason == "open_ended_intent_question"
+    assert third.decision.text
+    assert "Friday afternoon" in third.decision.text
+
+    fourth = controller.decide_burst(["Are you still there?"])
+
+    assert fourth.decision.kind == DecisionKind.STATE_OBJECTIVE
+    assert fourth.decision.reason == "presence_check_restate_objective"
+    assert fourth.decision.text

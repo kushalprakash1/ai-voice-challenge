@@ -161,6 +161,35 @@ class RoutineSchedulingPolicy:
         raw = agent_turn.strip()
         f = self.facts
 
+        # Live regression 2026-08-16: Flux emitted a complete, actionable
+        # wrong-DOB + open-intent turn with a trailing comma. The generic
+        # fragment gate must not suppress that correction.
+        early_open_ended_intent = _contains_any(
+            text,
+            (
+                "how can i help you today",
+                "what can i help you with",
+                "how may i help you",
+                "can i help you today",
+            ),
+        )
+        early_wrong_dob_asserted = (
+            "date of birth is" in text
+            and "april 12" not in text
+            and "1998" not in text
+        )
+
+        if early_wrong_dob_asserted and early_open_ended_intent:
+            return PolicyDecision(
+                DecisionKind.CORRECT_AND_STATE_OBJECTIVE,
+                text=(
+                    f"Actually, my date of birth is {f.dob}. "
+                    f"I need to schedule an appointment for "
+                    f"{f.preferred_day} {f.preferred_time}."
+                ),
+                reason="correct_remote_fact_then_answer_open_intent",
+            )
+
         if _is_obvious_fragment(raw):
             return PolicyDecision(
                 DecisionKind.HOLD,
@@ -498,6 +527,7 @@ class RoutineSchedulingPolicy:
                 "how can i help you today",
                 "what can i help you with",
                 "how may i help you",
+                "can i help you today",
             ),
         )
         if wrong_dob_asserted and open_ended_intent:
@@ -519,6 +549,24 @@ class RoutineSchedulingPolicy:
                     f"{f.preferred_day} {f.preferred_time}."
                 ),
                 reason="open_ended_intent_question",
+            )
+
+        if _contains_any(
+            text,
+            (
+                "are you still there",
+                "are you there",
+                "hello, are you there",
+            ),
+        ):
+            return PolicyDecision(
+                DecisionKind.STATE_OBJECTIVE,
+                text=(
+                    "Yes, I'm here. "
+                    f"I need to schedule an appointment for "
+                    f"{f.preferred_day} {f.preferred_time}."
+                ),
+                reason="presence_check_restate_objective",
             )
 
         # Concrete morning-only choices conflict with the hard afternoon constraint.
