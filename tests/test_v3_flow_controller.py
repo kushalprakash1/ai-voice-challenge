@@ -125,3 +125,85 @@ def test_spoken_slot_confirmation_completes_flow() -> None:
 
     assert confirmed.after.complete
     assert confirmed.after.accepted_slot_text.casefold() == "two thirty pm"
+
+
+def test_live_afternoon_fallback_reaches_non_friday_booking() -> None:
+    controller = SchedulingFlowController()
+
+    branch = controller.decide_burst(
+        [
+            (
+                "Would you like me to check afternoon options on a different "
+                "day or check with a different provider?"
+            )
+        ]
+    )
+
+    assert branch.decision.kind == DecisionKind.CHOOSE_SEARCH_BRANCH
+    assert branch.decision.reason == "choose_earlier_week_afternoon_search"
+    assert branch.after.allow_earlier_week_afternoons
+    assert "earlier in the week" in branch.decision.text.casefold()
+
+    permission = controller.decide_burst(
+        ["Would you like me to check afternoon options earlier in the week?"]
+    )
+
+    assert permission.decision.kind == DecisionKind.GRANT_PERMISSION
+    assert permission.after.allow_earlier_week_afternoons
+
+    accepted = controller.decide_burst(
+        ["I have Tuesday at 2:30 PM. Would that work for you?"]
+    )
+
+    assert accepted.decision.kind == DecisionKind.GRANT_PERMISSION
+    assert accepted.decision.reason == "compatible_concrete_slot_offered"
+    assert accepted.after.accepted_slot_text == "2:30 PM"
+    assert FlowStage.SLOT in accepted.after.communicated
+    assert not accepted.after.complete
+
+    confirmed = controller.decide_burst(
+        ["Great, you're confirmed for Tuesday at 2:30 PM."]
+    )
+
+    assert confirmed.decision.kind == DecisionKind.WAIT
+    assert confirmed.after.complete
+    assert FlowStage.CONFIRMATION in confirmed.after.confirmed
+    assert confirmed.after.accepted_slot_text == "2:30 PM"
+    assert confirmed.after.booking_confirmation_text is not None
+
+
+def test_same_burst_fallback_then_earlier_week_slot_is_accepted() -> None:
+    controller = SchedulingFlowController()
+
+    result = controller.decide_burst(
+        [
+            (
+                "Would you like me to check afternoon options on a different "
+                "day or check with a different provider?"
+            ),
+            "I have Wednesday at 3:15 PM. Would that work for you?",
+        ]
+    )
+
+    assert result.after.allow_earlier_week_afternoons
+    assert result.decision.kind == DecisionKind.GRANT_PERMISSION
+    assert result.decision.reason == "compatible_concrete_slot_offered"
+    assert result.after.accepted_slot_text == "3:15 PM"
+
+
+def test_relaxed_day_never_relaxes_afternoon_constraint() -> None:
+    controller = SchedulingFlowController()
+
+    controller.decide_burst(
+        ["Should I check afternoon options earlier in the week?"]
+    )
+
+    result = controller.decide_burst(
+        ["I have Monday at 9 AM. Would that work for you?"]
+    )
+
+    assert result.after.allow_earlier_week_afternoons
+    assert result.decision.kind == DecisionKind.DECLINE_INCOMPATIBLE_OFFER
+    assert "afternoon" in result.decision.text.casefold()
+    assert result.after.accepted_slot_text is None
+    assert not result.after.complete

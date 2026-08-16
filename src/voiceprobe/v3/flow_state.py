@@ -58,6 +58,7 @@ class FlowSnapshot:
     complete: bool
     accepted_slot_text: str | None = None
     booking_confirmation_text: str | None = None
+    allow_earlier_week_afternoons: bool = False
 
 
 @dataclass(slots=True)
@@ -66,6 +67,7 @@ class _MutableFlowState:
     confirmed: set[FlowStage] = field(default_factory=set)
     accepted_slot_text: str | None = None
     booking_confirmation_text: str | None = None
+    allow_earlier_week_afternoons: bool = False
 
 
 class SchedulingFlowTracker:
@@ -89,6 +91,9 @@ class SchedulingFlowTracker:
             complete=complete,
             accepted_slot_text=self._state.accepted_slot_text,
             booking_confirmation_text=self._state.booking_confirmation_text,
+            allow_earlier_week_afternoons=(
+                self._state.allow_earlier_week_afternoons
+            ),
         )
 
     def observe_remote_turn(self, agent_turn: str) -> FlowSnapshot:
@@ -254,6 +259,13 @@ class SchedulingFlowTracker:
 
         self._state.accepted_slot_text = normalized
         self._communicate(FlowStage.SLOT)
+        return self.snapshot()
+
+    def relax_day_constraint_for_afternoon(self) -> FlowSnapshot:
+        """Preserve PM while allowing Monday-Thursday after explicit fallback."""
+
+        self._state.allow_earlier_week_afternoons = True
+        self._communicate(FlowStage.DATE_TIME)
         return self.snapshot()
 
     def _communicate(

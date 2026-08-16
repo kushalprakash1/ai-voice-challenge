@@ -48,12 +48,34 @@ class SchedulingFlowController:
         source = tuple(turn for turn in turns if turn.strip())
         before = self._tracker.snapshot()
 
+        # Keep the deterministic policy synchronized with durable flow state.
+        # The policy remains Friday-first until the remote scheduler explicitly
+        # offers an alternate-day afternoon branch.
+        if before.allow_earlier_week_afternoons:
+            self._coalescer.policy.relax_day_constraint_for_afternoon()
+
+        relaxation_prompt_seen = any(
+            self._coalescer.policy.should_relax_day_constraint_for_afternoon(
+                turn
+            )
+            for turn in source
+        )
+
+        if relaxation_prompt_seen:
+            # Set policy state before coalescing so a concrete Mon-Thu PM slot
+            # arriving later in the same Flux burst is evaluated correctly.
+            self._coalescer.policy.relax_day_constraint_for_afternoon()
+
         # Remote confirmations are evidence even when the utterance itself does
         # not require a patient response.
         for turn in source:
             self._tracker.observe_remote_turn(turn)
 
         coalesced = self._coalescer.coalesce(source)
+
+        if relaxation_prompt_seen:
+            self._tracker.relax_day_constraint_for_afternoon()
+
         self._tracker.apply_decision(coalesced.decision)
 
         if (

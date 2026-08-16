@@ -47,6 +47,13 @@ _OTHER_WEEKDAYS = (
     "sunday",
 )
 
+_EARLIER_WEEKDAYS = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+)
+
 
 def _extract_offered_pm_slot(text: str) -> str | None:
     digit = _DIGIT_PM_RE.search(text)
@@ -84,6 +91,70 @@ class RoutineSchedulingPolicy:
 
     def __init__(self, facts: PatientFacts | None = None) -> None:
         self.facts = facts or PatientFacts()
+        self._allow_earlier_week_afternoons = False
+
+    @property
+    def allow_earlier_week_afternoons(self) -> bool:
+        """Whether Friday-only has been explicitly relaxed to Mon-Thu PM."""
+
+        return self._allow_earlier_week_afternoons
+
+    def relax_day_constraint_for_afternoon(self) -> None:
+        """Allow earlier-week afternoons after an explicit fallback branch."""
+
+        self._allow_earlier_week_afternoons = True
+
+    def should_relax_day_constraint_for_afternoon(
+        self,
+        agent_turn: str,
+    ) -> bool:
+        """Recognize a remote fallback prompt that permits controlled relaxation."""
+
+        text = _norm(agent_turn)
+
+        offers_day_or_provider = (
+            "afternoon" in text
+            and _contains_any(
+                text,
+                (
+                    "different day",
+                    "another day",
+                    "other day",
+                ),
+            )
+            and _contains_any(
+                text,
+                (
+                    "different provider",
+                    "another provider",
+                    "other provider",
+                ),
+            )
+        )
+        asks_earlier_week = (
+            "afternoon" in text
+            and _contains_any(
+                text,
+                (
+                    "earlier in the week",
+                    "earlier this week",
+                    "earlier in week",
+                ),
+            )
+            and _contains_any(
+                text,
+                (
+                    "check",
+                    "look",
+                    "see",
+                    "options",
+                    "openings",
+                    "availability",
+                ),
+            )
+        )
+
+        return offers_day_or_provider or asks_earlier_week
 
     def decide(self, agent_turn: str) -> PolicyDecision:
         text = _norm(agent_turn)
@@ -173,6 +244,69 @@ class RoutineSchedulingPolicy:
                 DecisionKind.CREATE_PROFILE,
                 text=f"Yes, please. My name is {f.first_name} {f.last_name}.",
                 reason="profile_workflow_requested",
+            )
+
+        # Live 2026-08-16 fallback: the scheduler offered afternoon options
+        # on another day versus another provider, then asked whether to check
+        # afternoon options earlier in the week. A bare "Yes, please" is
+        # ambiguous here. Choose the day branch explicitly while preserving PM.
+        offers_day_or_provider = (
+            "afternoon" in text
+            and _contains_any(
+                text,
+                (
+                    "different day",
+                    "another day",
+                    "other day",
+                ),
+            )
+            and _contains_any(
+                text,
+                (
+                    "different provider",
+                    "another provider",
+                    "other provider",
+                ),
+            )
+        )
+        asks_earlier_week = (
+            "afternoon" in text
+            and _contains_any(
+                text,
+                (
+                    "earlier in the week",
+                    "earlier this week",
+                    "earlier in week",
+                ),
+            )
+            and _contains_any(
+                text,
+                (
+                    "check",
+                    "look",
+                    "see",
+                    "options",
+                    "openings",
+                    "availability",
+                ),
+            )
+        )
+
+        if offers_day_or_provider:
+            return PolicyDecision(
+                DecisionKind.CHOOSE_SEARCH_BRANCH,
+                text="Please check afternoon options earlier in the week.",
+                reason="choose_earlier_week_afternoon_search",
+            )
+
+        if asks_earlier_week:
+            return PolicyDecision(
+                DecisionKind.GRANT_PERMISSION,
+                text=(
+                    "Yes, please. Please check afternoon options "
+                    "earlier in the week."
+                ),
+                reason="allow_earlier_week_afternoon_search",
             )
 
         # Provider choice should not be mistaken for another date/time request.
@@ -412,12 +546,14 @@ class RoutineSchedulingPolicy:
                 "would any of these",
             ),
         ):
+            follow_up = (
+                "Do you have anything in the afternoon earlier in the week?"
+                if self._allow_earlier_week_afternoons
+                else "Do you have anything Friday afternoon?"
+            )
             return PolicyDecision(
                 DecisionKind.DECLINE_INCOMPATIBLE_OFFER,
-                text=(
-                    "Those times don't work for me. "
-                    "Do you have anything Friday afternoon?"
-                ),
+                text=f"Those times don't work for me. {follow_up}",
                 reason="morning_offer_conflicts_with_afternoon_constraint",
             )
 
@@ -441,18 +577,35 @@ class RoutineSchedulingPolicy:
             ),
         )
 
+        offered_earlier_weekday = _contains_any(text, _EARLIER_WEEKDAYS)
+        offered_other_weekday = _contains_any(text, _OTHER_WEEKDAYS)
+
         if (
             offered_pm_slot is not None
-            and _contains_any(text, _OTHER_WEEKDAYS)
+            and offered_other_weekday
             and slot_offer_cue
+            and not (
+                self._allow_earlier_week_afternoons
+                and offered_earlier_weekday
+            )
         ):
-            return PolicyDecision(
-                DecisionKind.DECLINE_INCOMPATIBLE_OFFER,
-                text=(
+            if self._allow_earlier_week_afternoons:
+                decline_text = (
+                    "That day doesn't work for me. "
+                    "Please check an afternoon earlier in the week."
+                )
+                reason = "offer_outside_relaxed_earlier_week_window"
+            else:
+                decline_text = (
                     "That day doesn't work for me. "
                     "I need a Friday afternoon appointment."
-                ),
-                reason="non_friday_offer_conflicts_with_day_constraint",
+                )
+                reason = "non_friday_offer_conflicts_with_day_constraint"
+
+            return PolicyDecision(
+                DecisionKind.DECLINE_INCOMPATIBLE_OFFER,
+                text=decline_text,
+                reason=reason,
             )
 
         booking_confirmation = (

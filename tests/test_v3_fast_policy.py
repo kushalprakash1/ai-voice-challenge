@@ -96,3 +96,74 @@ def test_spoken_pm_slot_is_accepted() -> None:
     assert decision.kind.value == "grant_permission"
     assert decision.reason == "compatible_concrete_slot_offered"
 
+
+def test_day_or_provider_fallback_explicitly_chooses_earlier_week_afternoon() -> None:
+    policy = RoutineSchedulingPolicy()
+
+    decision = policy.decide(
+        (
+            "Would you like me to check afternoon options on a different day "
+            "or check with a different provider?"
+        )
+    )
+
+    assert decision.kind.value == "choose_search_branch"
+    assert decision.reason == "choose_earlier_week_afternoon_search"
+    assert "afternoon" in decision.text.casefold()
+    assert "earlier in the week" in decision.text.casefold()
+    assert decision.text != "Yes, please."
+
+
+def test_direct_earlier_week_afternoon_search_is_explicit() -> None:
+    policy = RoutineSchedulingPolicy()
+
+    decision = policy.decide(
+        "Would you like me to check afternoon options earlier in the week?"
+    )
+
+    assert decision.kind.value == "grant_permission"
+    assert decision.reason == "allow_earlier_week_afternoon_search"
+    assert "afternoon options earlier in the week" in decision.text.casefold()
+
+
+def test_earlier_week_pm_slot_is_accepted_only_after_relaxation() -> None:
+    policy = RoutineSchedulingPolicy()
+
+    before = policy.decide(
+        "I have Tuesday at 2:30 PM. Would that work for you?"
+    )
+    assert before.kind.value == "decline_incompatible_offer"
+
+    policy.relax_day_constraint_for_afternoon()
+
+    after = policy.decide(
+        "I have Tuesday at 2:30 PM. Would that work for you?"
+    )
+    assert after.kind.value == "grant_permission"
+    assert after.reason == "compatible_concrete_slot_offered"
+
+
+def test_morning_remains_incompatible_after_day_relaxation() -> None:
+    policy = RoutineSchedulingPolicy()
+    policy.relax_day_constraint_for_afternoon()
+
+    decision = policy.decide(
+        "I have Tuesday at 9 AM. Would that work for you?"
+    )
+
+    assert decision.kind.value == "decline_incompatible_offer"
+    assert "afternoon" in decision.text.casefold()
+    assert "earlier in the week" in decision.text.casefold()
+
+
+def test_weekend_pm_is_not_accepted_by_earlier_week_relaxation() -> None:
+    policy = RoutineSchedulingPolicy()
+    policy.relax_day_constraint_for_afternoon()
+
+    decision = policy.decide(
+        "I have Saturday at 2:30 PM. Would that work for you?"
+    )
+
+    assert decision.kind.value == "decline_incompatible_offer"
+    assert decision.reason == "offer_outside_relaxed_earlier_week_window"
+
