@@ -169,6 +169,67 @@ Use other_requested_facts only when the requested fact genuinely does not fit
 the canonical RequestedFact enum.
 
 
+REMOTE FACT ASSERTIONS
+
+The remote agent may state a fact ABOUT THE CALLER.
+
+Examples:
+
+"Your date of birth is July 4th, 2000."
+stated_facts = [
+  {
+    "fact": "date_of_birth",
+    "value": "July 4th, 2000"
+  }
+]
+
+"I have your insurance as Blue Cross."
+stated_facts = [
+  {
+    "fact": "insurance",
+    "value": "Blue Cross"
+  }
+]
+
+"You are a returning patient."
+stated_facts = [
+  {
+    "fact": "patient_status",
+    "value": "a returning patient"
+  }
+]
+
+IMPORTANT:
+
+stated_facts records what the REMOTE AGENT CLAIMED.
+
+You do not know whether the assertion is true.
+
+Never change, suppress, or rewrite an asserted value to match what you
+think the caller might want.
+
+A single remote utterance may contain BOTH an assertion and a request.
+
+Example:
+
+"Your date of birth is July 4th, 2000. How may I help you today?"
+
+should contain:
+
+stated_facts:
+  date_of_birth = July 4th, 2000
+
+AND:
+
+requested_action = "state_objective"
+
+Do not discard one semantic event merely because another occurs later
+in the same utterance.
+
+If no caller-related fact was asserted:
+
+stated_facts = []
+
 STATUS / WAIT
 
 Examples:

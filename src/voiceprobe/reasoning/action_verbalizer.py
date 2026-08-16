@@ -14,6 +14,9 @@ from voiceprobe.reasoning.action_plan import (
     ActionPlan,
     PatientActionKind,
 )
+from voiceprobe.reasoning.fact_grounding import (
+    FactConflict,
+)
 from voiceprobe.reasoning.turn_frame import (
     RequestedFact,
     TurnFrame,
@@ -61,6 +64,47 @@ class GenericActionVerbalizer:
     """Convert policy-approved actions into safe caller speech."""
 
     def verbalize(
+        self,
+        *,
+        world: PatientWorldModel,
+        turn: TurnFrame,
+        plan: ActionPlan,
+        corrections: tuple[FactConflict, ...] = (),
+    ) -> str:
+        """Realize corrections plus the approved primary action.
+
+        Corrections are additive semantic events.
+
+        A remote agent may assert a wrong caller fact AND ask a valid
+        question in the same utterance. We therefore do not replace the
+        primary action merely because a correction is necessary.
+        """
+
+        action = plan.action
+
+        primary = self._primary_text(
+            world=world,
+            turn=turn,
+            plan=plan,
+        )
+
+        correction_text = self._correction_text(
+            world=world,
+            corrections=corrections,
+        )
+
+        if correction_text and primary:
+            return (
+                f"{correction_text} "
+                f"{primary}"
+            )
+
+        if correction_text:
+            return correction_text
+
+        return primary
+
+    def _primary_text(
         self,
         *,
         world: PatientWorldModel,
@@ -326,6 +370,111 @@ class GenericActionVerbalizer:
                 for fact
                 in facts
             )
+        )
+
+    @classmethod
+    def _correction_text(
+        cls,
+        *,
+        world: PatientWorldModel,
+        corrections: tuple[FactConflict, ...],
+    ) -> str:
+        """Render authoritative corrections without another model call."""
+
+        if not corrections:
+            return ""
+
+        pieces: list[str] = []
+
+        for conflict in corrections:
+
+            fact = conflict.fact
+
+            value = conflict.authoritative_value
+
+            if fact is RequestedFact.DATE_OF_BIRTH:
+                pieces.append(
+                    f"my date of birth is {value}"
+                )
+                continue
+
+            if fact is RequestedFact.INSURANCE:
+                pieces.append(
+                    f"my insurance is {value}"
+                )
+                continue
+
+            if fact is RequestedFact.FIRST_NAME:
+                pieces.append(
+                    f"my first name is {value}"
+                )
+                continue
+
+            if fact is RequestedFact.LAST_NAME:
+                pieces.append(
+                    f"my last name is {value}"
+                )
+                continue
+
+            if fact is RequestedFact.FULL_NAME:
+                pieces.append(
+                    f"my name is {value}"
+                )
+                continue
+
+            if fact is RequestedFact.APPOINTMENT_TYPE:
+                pieces.append(
+                    f"I need {value}"
+                )
+                continue
+
+            if fact is RequestedFact.PROVIDER_PREFERENCE:
+                pieces.append(
+                    f"my provider preference is {value}"
+                )
+                continue
+
+            if fact is RequestedFact.PATIENT_STATUS:
+                pieces.append(
+                    f"I'm {value}"
+                )
+                continue
+
+            if fact is RequestedFact.PREFERRED_DAY:
+                pieces.append(
+                    f"I need {value}"
+                )
+                continue
+
+            if fact is RequestedFact.PREFERRED_TIME:
+                pieces.append(
+                    f"I need {value}"
+                )
+                continue
+
+            # Generic fallback still uses authoritative patient truth and
+            # never repeats the remote agent's conflicting value.
+            readable = (
+                fact.value
+                .replace("_", " ")
+            )
+
+            pieces.append(
+                f"my {readable} is {value}"
+            )
+
+        if not pieces:
+            return ""
+
+        if len(pieces) == 1:
+            body = pieces[0]
+        else:
+            body = ", and ".join(
+                pieces
+            )
+
+        return cls._sentence(
+            f"Actually, {body}"
         )
 
     @staticmethod

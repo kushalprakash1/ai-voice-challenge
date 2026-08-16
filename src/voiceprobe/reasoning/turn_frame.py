@@ -103,6 +103,29 @@ class RequestedFact(StrEnum):
     ADDRESS = "address"
 
 
+class AgentFactAssertion(BaseModel):
+    """One caller-related fact asserted by the remote agent.
+
+    This records what the remote side claimed.
+
+    It does NOT mean the claim is true.
+
+    A later grounding/policy layer compares the assertion against
+    authoritative PatientWorldModel truth.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+
+    fact: RequestedFact
+
+    # Preserve the remote agent's understood value.
+    value: str = Field(
+        min_length=1,
+    )
+
+
 class SlotOption(BaseModel):
     """One appointment option explicitly communicated by the agent."""
 
@@ -142,6 +165,13 @@ class TurnFrame(BaseModel):
     # Facts outside our common ontology remain representable without
     # weakening requested_facts into arbitrary free-form strings.
     other_requested_facts: list[str] = Field(
+        default_factory=list,
+    )
+
+    # Caller-related facts stated or asserted by the REMOTE agent.
+    #
+    # These are observations, not trusted patient truth.
+    stated_facts: list[AgentFactAssertion] = Field(
         default_factory=list,
     )
 

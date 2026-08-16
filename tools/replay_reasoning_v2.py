@@ -18,6 +18,9 @@ from voiceprobe.reasoning.action_plan import (
 from voiceprobe.reasoning.action_verbalizer import (
     GenericActionVerbalizer,
 )
+from voiceprobe.reasoning.fact_grounding import (
+    ground_fact_assertions,
+)
 from voiceprobe.reasoning.planner import (
     QwenPatientPlanner,
 )
@@ -235,6 +238,13 @@ def main() -> None:
                     )
                 )
 
+                grounding = (
+                    ground_fact_assertions(
+                        world=world,
+                        turn=frame,
+                    )
+                )
+
                 plan, repaired_from = (
                     planner.plan(
                         world=world,
@@ -250,6 +260,9 @@ def main() -> None:
                         world=world,
                         turn=frame,
                         plan=plan,
+                        corrections=(
+                            grounding.conflicts
+                        ),
                     )
                 )
 
@@ -273,6 +286,31 @@ def main() -> None:
                         item.value
                         for item
                         in frame.requested_facts
+                    ],
+                )
+
+                print(
+                    "  stated_facts     =",
+                    [
+                        {
+                            "fact": item.fact.value,
+                            "value": item.value,
+                        }
+                        for item
+                        in frame.stated_facts
+                    ],
+                )
+
+                print(
+                    "  fact_conflicts   =",
+                    [
+                        {
+                            "fact": item.fact.value,
+                            "asserted": item.asserted_value,
+                            "authoritative": item.authoritative_value,
+                        }
+                        for item
+                        in grounding.conflicts
                     ],
                 )
 

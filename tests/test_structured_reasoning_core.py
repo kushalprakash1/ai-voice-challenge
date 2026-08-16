@@ -357,3 +357,81 @@ def test_incomplete_fragment_wait_frame_is_valid() -> None:
     )
 
     assert frame.requested_facts == []
+
+
+def test_turn_frame_can_record_untrusted_remote_fact_assertion() -> None:
+    """Remote claims must be observable without becoming patient truth."""
+
+    frame = TurnFrame.model_validate(
+        {
+            "speech_act": "information",
+            "workflow": "patient_intake",
+            "requested_action": "none",
+            "response_required": False,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "stated_facts": [
+                {
+                    "fact": "date_of_birth",
+                    "value": "July 4th, 2000",
+                }
+            ],
+            "appointment_options": [],
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    assert len(
+        frame.stated_facts
+    ) == 1
+
+    assertion = frame.stated_facts[0]
+
+    assert (
+        assertion.fact.value
+        == "date_of_birth"
+    )
+
+    assert (
+        assertion.value
+        == "July 4th, 2000"
+    )
+
+
+def test_assertion_and_objective_request_can_coexist() -> None:
+    """One utterance may contain several semantic events."""
+
+    frame = TurnFrame.model_validate(
+        {
+            "speech_act": "question",
+            "workflow": "patient_intake",
+            "requested_action": "state_objective",
+            "response_required": True,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "stated_facts": [
+                {
+                    "fact": "date_of_birth",
+                    "value": "July 4th, 2000",
+                }
+            ],
+            "appointment_options": [],
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    assert (
+        frame.requested_action.value
+        == "state_objective"
+    )
+
+    assert (
+        frame.stated_facts[0].fact.value
+        == "date_of_birth"
+    )
