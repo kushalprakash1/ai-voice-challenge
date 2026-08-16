@@ -284,6 +284,22 @@ class ConstraintValidator:
                 )
             )
 
+        if (
+            action
+            is PatientActionKind.SELECT_OPTION
+            and turn.requested_action
+            is not RequestedAction.CHOOSE_OPTION
+        ):
+            violations.append(
+                ConstraintViolation(
+                    code="selection_without_choice_request",
+                    detail=(
+                        "Caller may select an appointment option only "
+                        "when the remote turn actually requests a choice."
+                    ),
+                )
+            )
+
     @staticmethod
     def _validate_fact_payload(
         *,

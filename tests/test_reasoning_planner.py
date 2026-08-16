@@ -1111,3 +1111,264 @@ def test_model_fact_payload_is_replaced_by_authoritative_resolution() -> None:
     ]
 
     assert violations == ()
+
+
+def test_confirmed_booking_ends_cleanly_without_reselecting_slot() -> None:
+    """A booked slot is not another invitation to select that slot."""
+
+    turn = TurnFrame.model_validate(
+        {
+            "speech_act": "information",
+            "workflow": "scheduling",
+            "requested_action": "none",
+            "response_required": False,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "stated_facts": [],
+            "proposed_workflow": None,
+            "appointment_options": [],
+            "confirmed_appointment": {
+                "day": "Friday",
+                "date_text": None,
+                "time": "2:30 PM",
+                "daypart": None,
+                "provider": None,
+                "appointment_type": None,
+            },
+            "booking_confirmed": True,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    calls = 0
+
+    def forbidden(
+        request: httpx.Request,
+    ) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise AssertionError(
+            "Confirmed booking should not require Qwen planning."
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            forbidden
+        )
+    )
+
+    planner = QwenPatientPlanner(
+        model="qwen3:14b",
+        url="http://unused.invalid/api/chat",
+        client=client,
+    )
+
+    try:
+        plan, violations = planner.plan(
+            world=build_world_model(
+                get_scenario(
+                    "autonomous-phone-diagnostic"
+                )
+            ),
+            turn=turn,
+        )
+    finally:
+        planner.close()
+        client.close()
+
+    assert calls == 0
+
+    assert (
+        plan.action
+        is PatientActionKind.END_CONVERSATION
+    )
+
+    assert plan.selected_option_index is None
+    assert violations == ()
+
+
+def test_select_option_is_invalid_without_choice_request() -> None:
+    turn = TurnFrame.model_validate(
+        {
+            "speech_act": "information",
+            "workflow": "scheduling",
+            "requested_action": "none",
+            "response_required": False,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "stated_facts": [],
+            "proposed_workflow": None,
+            "appointment_options": [
+                {
+                    "day": "Friday",
+                    "date_text": None,
+                    "time": "2:30 PM",
+                    "daypart": None,
+                    "provider": None,
+                    "appointment_type": None,
+                }
+            ],
+            "confirmed_appointment": None,
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    plan = ActionPlan(
+        action=PatientActionKind.SELECT_OPTION,
+        selected_option_index=0,
+        reason_code="bad_reselection",
+        confidence=1.0,
+    )
+
+    violations = ConstraintValidator().validate(
+        world=build_world_model(
+            get_scenario(
+                "autonomous-phone-diagnostic"
+            )
+        ),
+        turn=turn,
+        plan=plan,
+    )
+
+    assert any(
+        item.code
+        == "selection_without_choice_request"
+        for item in violations
+    )
+
+
+def test_passive_none_turn_waits_instead_of_ending_conversation() -> None:
+    """A passive acknowledgement is not evidence that the mission is done."""
+
+    turn = TurnFrame.model_validate(
+        {
+            "speech_act": "information",
+            "workflow": "scheduling",
+            "requested_action": "none",
+            "response_required": False,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "stated_facts": [],
+            "proposed_workflow": None,
+            "appointment_options": [],
+            "confirmed_appointment": None,
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    calls = 0
+
+    def forbidden(
+        request: httpx.Request,
+    ) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise AssertionError(
+            "Passive NONE turn should bypass Qwen."
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            forbidden
+        )
+    )
+
+    planner = QwenPatientPlanner(
+        model="qwen3:14b",
+        url="http://unused.invalid/api/chat",
+        client=client,
+    )
+
+    try:
+        plan, violations = planner.plan(
+            world=build_world_model(
+                get_scenario(
+                    "autonomous-phone-diagnostic"
+                )
+            ),
+            turn=turn,
+        )
+    finally:
+        planner.close()
+        client.close()
+
+    assert calls == 0
+
+    assert (
+        plan.action
+        is PatientActionKind.WAIT
+    )
+
+    assert (
+        plan.reason_code
+        == "passive_turn_requires_no_response"
+    )
+
+    assert violations == ()
+
+
+def test_explicit_conversation_end_still_ends() -> None:
+    """The passive-turn WAIT rule must not swallow a real goodbye."""
+
+    turn = TurnFrame.model_validate(
+        {
+            "speech_act": "goodbye",
+            "workflow": "scheduling",
+            "requested_action": "none",
+            "response_required": False,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "stated_facts": [],
+            "proposed_workflow": None,
+            "appointment_options": [],
+            "confirmed_appointment": None,
+            "booking_confirmed": False,
+            "conversation_end_requested": True,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: (_ for _ in ()).throw(
+                AssertionError(
+                    "Explicit conversation end should bypass Qwen."
+                )
+            )
+        )
+    )
+
+    planner = QwenPatientPlanner(
+        model="qwen3:14b",
+        url="http://unused.invalid/api/chat",
+        client=client,
+    )
+
+    try:
+        plan, violations = planner.plan(
+            world=build_world_model(
+                get_scenario(
+                    "autonomous-phone-diagnostic"
+                )
+            ),
+            turn=turn,
+        )
+    finally:
+        planner.close()
+        client.close()
+
+    assert (
+        plan.action
+        is PatientActionKind.END_CONVERSATION
+    )
+
+    assert violations == ()

@@ -498,3 +498,230 @@ def test_normal_availability_permission_needs_no_side_workflow() -> None:
     )
 
     assert frame.proposed_workflow is None
+
+
+def test_confirmed_appointment_is_not_patient_fact_assertion() -> None:
+    """Booking state belongs to scheduling state, not caller-profile truth."""
+
+    frame = TurnFrame.model_validate(
+        {
+            "speech_act": "information",
+            "workflow": "scheduling",
+            "requested_action": "none",
+            "response_required": False,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "stated_facts": [],
+            "proposed_workflow": None,
+            "appointment_options": [],
+            "confirmed_appointment": {
+                "day": "Friday",
+                "date_text": None,
+                "time": "2:30 PM",
+                "daypart": None,
+                "provider": None,
+                "appointment_type": None,
+            },
+            "booking_confirmed": True,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    assert frame.stated_facts == []
+    assert frame.appointment_options == []
+    assert frame.booking_confirmed is True
+    assert frame.confirmed_appointment is not None
+    assert frame.confirmed_appointment.day == "Friday"
+    assert frame.confirmed_appointment.time == "2:30 PM"
+
+
+def test_confirmed_slot_requires_booking_confirmed() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        TurnFrame.model_validate(
+            {
+                "speech_act": "information",
+                "workflow": "scheduling",
+                "requested_action": "none",
+                "response_required": False,
+                "requested_facts": [],
+                "other_requested_facts": [],
+                "stated_facts": [],
+                "proposed_workflow": None,
+                "appointment_options": [],
+                "confirmed_appointment": {
+                    "day": "Friday",
+                    "date_text": None,
+                    "time": "2:30 PM",
+                    "daypart": None,
+                    "provider": None,
+                    "appointment_type": None,
+                },
+                "booking_confirmed": False,
+                "conversation_end_requested": False,
+                "agent_is_still_working": False,
+                "confidence": 1.0,
+            }
+        )
+
+
+def test_source_grounding_drops_assertion_missing_from_current_turn() -> None:
+    """Historical or prompt contamination must not become a correction."""
+
+    from voiceprobe.reasoning.semantic_reasoner import (
+        source_ground_turn_frame,
+    )
+
+    frame = TurnFrame.model_validate(
+        {
+            "speech_act": "information",
+            "workflow": "scheduling",
+            "requested_action": "none",
+            "response_required": False,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "stated_facts": [
+                {
+                    "fact": "date_of_birth",
+                    "value": "July 4th, 2000",
+                }
+            ],
+            "proposed_workflow": None,
+            "appointment_options": [],
+            "confirmed_appointment": {
+                "day": "Friday",
+                "date_text": None,
+                "time": "2:30 PM",
+                "daypart": None,
+                "provider": None,
+                "appointment_type": None,
+            },
+            "booking_confirmed": True,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    grounded = source_ground_turn_frame(
+        frame=frame,
+        agent_turn=(
+            "Great. You're booked for Friday at 2:30 PM."
+        ),
+    )
+
+    assert grounded.stated_facts == []
+
+    # The guard removes only unsupported assertions.
+    # Legitimate scheduling semantics must survive unchanged.
+    assert grounded.booking_confirmed is True
+    assert grounded.confirmed_appointment is not None
+    assert grounded.confirmed_appointment.day == "Friday"
+    assert grounded.confirmed_appointment.time == "2:30 PM"
+
+
+def test_source_grounding_keeps_supported_name_assertion() -> None:
+    """A genuine current-turn assertion must survive provenance checking."""
+
+    from voiceprobe.reasoning.semantic_reasoner import (
+        source_ground_turn_frame,
+    )
+
+    frame = TurnFrame.model_validate(
+        {
+            "speech_act": "question",
+            "workflow": "patient_intake",
+            "requested_action": "answer_fact",
+            "response_required": True,
+            "requested_facts": [
+                "last_name",
+            ],
+            "other_requested_facts": [],
+            "stated_facts": [
+                {
+                    "fact": "first_name",
+                    "value": "Martin",
+                }
+            ],
+            "proposed_workflow": None,
+            "appointment_options": [],
+            "confirmed_appointment": None,
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    grounded = source_ground_turn_frame(
+        frame=frame,
+        agent_turn=(
+            "Thanks, Martin. What is your last name?"
+        ),
+    )
+
+    assert len(
+        grounded.stated_facts
+    ) == 1
+
+    assert (
+        grounded.stated_facts[0].fact.value
+        == "first_name"
+    )
+
+    assert (
+        grounded.stated_facts[0].value
+        == "Martin"
+    )
+
+
+def test_source_grounding_keeps_supported_dob_assertion() -> None:
+    """Ordinal/punctuation normalization must not erase real assertions."""
+
+    from voiceprobe.reasoning.semantic_reasoner import (
+        source_ground_turn_frame,
+    )
+
+    frame = TurnFrame.model_validate(
+        {
+            "speech_act": "information",
+            "workflow": "profile_setup",
+            "requested_action": "none",
+            "response_required": False,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "stated_facts": [
+                {
+                    "fact": "date_of_birth",
+                    "value": "July 4th, 2000",
+                }
+            ],
+            "proposed_workflow": None,
+            "appointment_options": [],
+            "confirmed_appointment": None,
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    grounded = source_ground_turn_frame(
+        frame=frame,
+        agent_turn=(
+            "Your date of birth is July 4th, 2000."
+        ),
+    )
+
+    assert len(
+        grounded.stated_facts
+    ) == 1
+
+    assert (
+        grounded.stated_facts[0].fact.value
+        == "date_of_birth"
+    )

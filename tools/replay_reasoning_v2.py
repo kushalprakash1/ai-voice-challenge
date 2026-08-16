@@ -313,6 +313,22 @@ def main() -> None:
                 )
 
                 print(
+                    "  booking_confirmed=",
+                    frame.booking_confirmed,
+                )
+
+                print(
+                    "  confirmed_slot   =",
+                    (
+                        frame.confirmed_appointment.model_dump(
+                            mode="json",
+                        )
+                        if frame.confirmed_appointment is not None
+                        else None
+                    ),
+                )
+
+                print(
                     "  fact_conflicts   =",
                     [
                         {

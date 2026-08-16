@@ -12,6 +12,7 @@ reasoning layers.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 
 import httpx
@@ -300,7 +301,130 @@ Use other_requested_facts only when the requested fact genuinely does not fit
 the canonical RequestedFact enum.
 
 
+SEMANTIC ONTOLOGY BOUNDARIES
+
+Keep these categories strictly separate.
+
+1. CALLER / PROFILE ASSERTION
+
+Example:
+
+"Your date of birth is July 4th, 2000."
+
+This belongs in stated_facts.
+
+2. APPOINTMENT OFFER
+
+Example:
+
+"I have Friday at 2:30 PM available. Would you like that?"
+
+This belongs in appointment_options.
+
+3. BOOKING CONFIRMATION
+
+Examples:
+
+"You are booked for Friday at 2:30 PM."
+"Great, you're booked Friday at 2:30."
+
+Use:
+
+booking_confirmed = true
+
+confirmed_appointment = {
+  "day": "Friday",
+  "time": "2:30 PM"
+}
+
+appointment_options = []
+
+unless the same utterance separately contains additional choices.
+
+Do NOT represent a booked slot as:
+
+preferred_day
+preferred_time
+appointment_type
+
+Merely scheduling or booking Friday does NOT assert that the caller's
+preferred_day is Friday.
+
+Merely scheduling or booking 2:30 PM does NOT assert that the caller's
+preferred_time is 2:30 PM.
+
+The words:
+
+book
+booked
+booking
+appointment
+
+are NOT appointment_type values.
+
+appointment_type is only an actual visit category such as:
+
+new patient consultation
+follow-up
+routine visit
+
+A phrase such as:
+
+"Friday at 2:30 PM"
+
+is NEVER an appointment_type.
+
+
+CALLER PREFERENCES AS ASSERTIONS
+
+Only create a stated_fact for preferred_day or preferred_time when the
+remote agent explicitly attributes a PREFERENCE to the caller.
+
+Examples:
+
+"You said you prefer Friday."
+"Your preferred time is afternoon."
+
+Those may be stated_facts.
+
+But:
+
+"You are booked Friday at 2:30 PM."
+
+is booking state, not preference state.
+
+
 REMOTE FACT ASSERTIONS
+
+IMPORTANT SOURCE RULE FOR stated_facts
+
+stated_facts is stricter than ordinary contextual interpretation.
+
+A stated_fact means the REMOTE AGENT ASSERTED THAT FACT IN
+latest_agent_turn.
+
+Therefore:
+
+- stated_facts MUST be supported by latest_agent_turn itself
+- NEVER inherit a stated_fact from recent_agent_history
+- NEVER copy a stated_fact from an example in this prompt
+- NEVER manufacture an assertion because it would be plausible
+- recent history may help interpret other conversational fields, but
+  it cannot create a new assertion in the current turn
+
+Example:
+
+recent history:
+"Your date of birth is July 4th, 2000."
+
+latest turn:
+"Great. You're booked Friday at 2:30 PM."
+
+The latest turn has:
+
+stated_facts = []
+
+The previous DOB statement MUST NOT reappear as a current assertion.
 
 The remote agent may state a fact ABOUT THE CALLER.
 
@@ -472,6 +596,141 @@ Return only schema-valid structured output.
 """
 
 
+_ORDINAL_SUFFIX_RE = re.compile(
+    r"\b(\d{1,2})(?:st|nd|rd|th)\b",
+    flags=re.IGNORECASE,
+)
+
+_NON_ALNUM_RE = re.compile(
+    r"[^a-z0-9]+",
+)
+
+_EVIDENCE_NOISE_TOKENS = {
+    "a",
+    "an",
+    "the",
+    "is",
+    "are",
+    "was",
+    "were",
+    "my",
+    "your",
+}
+
+
+def _normalize_evidence_text(
+    value: object,
+) -> str:
+    """Normalize harmless speech/text differences for source checks."""
+
+    text = str(
+        value
+    ).casefold()
+
+    text = _ORDINAL_SUFFIX_RE.sub(
+        r"\1",
+        text,
+    )
+
+    text = _NON_ALNUM_RE.sub(
+        " ",
+        text,
+    )
+
+    return " ".join(
+        text.split()
+    )
+
+
+def _asserted_value_has_current_turn_evidence(
+    *,
+    value: object,
+    agent_turn: str,
+) -> bool:
+    """Require assertion values to be evidenced by THIS remote turn.
+
+    This deliberately prefers dropping an uncertain assertion over
+    fabricating a patient correction.
+
+    It is not semantic reasoning. It is a final provenance guard.
+    """
+
+    source = _normalize_evidence_text(
+        agent_turn
+    )
+
+    candidate = _normalize_evidence_text(
+        value
+    )
+
+    if not source or not candidate:
+        return False
+
+    # Strongest case: normalized value occurs directly in source.
+    if candidate in source:
+        return True
+
+    # Permit harmless surrounding-word differences such as:
+    #
+    #   value  = "a returning patient"
+    #   source = "You are a returning patient."
+    #
+    # Every meaningful value token still has to occur in THIS turn.
+    tokens = [
+        token
+        for token in candidate.split()
+        if token not in _EVIDENCE_NOISE_TOKENS
+    ]
+
+    if not tokens:
+        return False
+
+    source_tokens = set(
+        source.split()
+    )
+
+    return all(
+        token in source_tokens
+        for token in tokens
+    )
+
+
+def source_ground_turn_frame(
+    *,
+    frame: TurnFrame,
+    agent_turn: str,
+) -> TurnFrame:
+    """Remove unsupported remote-agent fact assertions.
+
+    Qwen may use recent context to understand elliptical dialogue, but
+    AgentFactAssertion has stricter provenance semantics:
+
+        the remote agent asserted this fact in THIS turn.
+
+    Unsupported assertions are removed before patient truth grounding.
+    """
+
+    supported = [
+        assertion
+        for assertion in frame.stated_facts
+        if _asserted_value_has_current_turn_evidence(
+            value=assertion.value,
+            agent_turn=agent_turn,
+        )
+    ]
+
+    if len(supported) == len(
+        frame.stated_facts
+    ):
+        return frame
+
+    return frame.model_copy(
+        update={
+            "stated_facts": supported,
+        }
+    )
+
+
 class StructuredTurnReasoner:
     """Convert arbitrary remote-agent speech into typed semantics."""
 
@@ -592,8 +851,13 @@ class StructuredTurnReasoner:
                 )
 
             try:
-                return TurnFrame.model_validate_json(
+                frame = TurnFrame.model_validate_json(
                     content
+                )
+
+                return source_ground_turn_frame(
+                    frame=frame,
+                    agent_turn=agent_turn,
                 )
 
             except ValidationError as error:

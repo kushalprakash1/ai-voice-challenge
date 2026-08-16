@@ -512,10 +512,49 @@ class QwenPatientPlanner:
         appointment time, or scenario-specific sentence appears here.
         """
 
+        if (
+            turn.booking_confirmed
+            and turn.confirmed_appointment is not None
+            and turn.requested_action is RequestedAction.NONE
+            and not turn.response_required
+        ):
+            return ActionPlan(
+                action=PatientActionKind.END_CONVERSATION,
+                reason_code="booking_confirmed",
+                confidence=turn.confidence,
+            )
+
+        if (
+            turn.conversation_end_requested
+            and turn.requested_action
+            is RequestedAction.NONE
+        ):
+            return ActionPlan(
+                action=PatientActionKind.END_CONVERSATION,
+                reason_code="remote_conversation_end",
+                confidence=turn.confidence,
+            )
+
         if turn.requested_action is RequestedAction.WAIT:
             return ActionPlan(
                 action=PatientActionKind.WAIT,
                 reason_code="semantic_turn_requires_wait",
+                confidence=turn.confidence,
+            )
+
+        if (
+            turn.requested_action
+            is RequestedAction.NONE
+            and not turn.response_required
+        ):
+            # Passive acknowledgements or informational fragments such as
+            # "Great." do not establish mission completion.
+            #
+            # Keep listening unless a stronger semantic signal above
+            # established booking confirmation or conversation termination.
+            return ActionPlan(
+                action=PatientActionKind.WAIT,
+                reason_code="passive_turn_requires_no_response",
                 confidence=turn.confidence,
             )
 

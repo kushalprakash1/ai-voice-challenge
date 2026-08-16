@@ -223,6 +223,11 @@ class TurnFrame(BaseModel):
         default_factory=list,
     )
 
+    # A slot the remote side says is actually booked/confirmed.
+    #
+    # This is NOT an appointment offer and NOT a caller-profile fact.
+    confirmed_appointment: SlotOption | None = None
+
     booking_confirmed: bool = False
     conversation_end_requested: bool = False
     agent_is_still_working: bool = False
@@ -294,5 +299,13 @@ class TurnFrame(BaseModel):
                 raise ValueError(
                     f"{self.requested_action.value} must require a response."
                 )
+
+        if (
+            self.confirmed_appointment is not None
+            and not self.booking_confirmed
+        ):
+            raise ValueError(
+                "confirmed_appointment requires booking_confirmed=true."
+            )
 
         return self
