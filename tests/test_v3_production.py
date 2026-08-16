@@ -8,6 +8,7 @@ from voiceprobe.v3.production import (
     DEFAULT_PRODUCTION_FLUX_CONFIG,
     PipecatRuntimeBridge,
     ProductionFluxConfig,
+    safe_production_fallback_resolver,
 )
 
 
@@ -44,6 +45,7 @@ def make_bridge(*, grace_ms: float = 0.0):
     bridge = PipecatRuntimeBridge(
         config=config,
         tts_frame_factory=FakeSpeechFrame,
+        fallback_resolver=safe_production_fallback_resolver,
     )
     worker = FakeWorker()
     bridge.bind_worker(worker)

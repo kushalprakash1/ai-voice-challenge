@@ -204,6 +204,7 @@ class SchedulingFlowTracker:
 
         elif kind == DecisionKind.ANSWER_FACT:
             if reason in {
+                "first_name_requested",
                 "last_name_requested",
                 "full_name_requested",
             }:
@@ -212,6 +213,10 @@ class SchedulingFlowTracker:
                 self._communicate(FlowStage.DOB)
             elif reason == "insurance_requested":
                 self._communicate(FlowStage.INSURANCE)
+
+        elif kind == DecisionKind.CORRECT_FACT:
+            if reason == "dob_correction":
+                self._communicate(FlowStage.DOB)
 
         elif kind == DecisionKind.CORRECT_AND_STATE_OBJECTIVE:
             self._communicate(

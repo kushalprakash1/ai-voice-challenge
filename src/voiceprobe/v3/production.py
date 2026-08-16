@@ -23,6 +23,7 @@ from .runtime import (
     RuntimeDecision,
     VoiceProbeV3Runtime,
 )
+from .semantic_router import V31SemanticRouter
 from .turn_stabilizer import DEFAULT_CONTINUATION_GRACE_MS
 
 
@@ -138,6 +139,9 @@ def build_production_flux_service(
     )
 
 
+_DEFAULT_V31_FALLBACK = object()
+
+
 class PipecatRuntimeBridge:
     """Connect VoiceProbe runtime decisions to a Pipecat PipelineWorker."""
 
@@ -146,7 +150,8 @@ class PipecatRuntimeBridge:
         *,
         config: ProductionFluxConfig = DEFAULT_PRODUCTION_FLUX_CONFIG,
         tts_frame_factory: Callable[[str], Any] | None = None,
-        fallback_resolver: FallbackResolver = safe_production_fallback_resolver,
+        fallback_resolver: FallbackResolver | object = _DEFAULT_V31_FALLBACK,
+        semantic_router: V31SemanticRouter | None = None,
     ) -> None:
         config.validate()
 
@@ -156,13 +161,28 @@ class PipecatRuntimeBridge:
                 "unresolved FALLBACK decisions must never become silence."
             )
 
+        if fallback_resolver is _DEFAULT_V31_FALLBACK:
+            router = semantic_router or V31SemanticRouter(
+                use_embeddings=True,
+            )
+            resolved_fallback: FallbackResolver = router.resolve
+            self._semantic_router: V31SemanticRouter | None = router
+        else:
+            if semantic_router is not None:
+                raise ValueError(
+                    "semantic_router cannot be combined with a custom "
+                    "fallback_resolver."
+                )
+            resolved_fallback = fallback_resolver
+            self._semantic_router = None
+
         self._config = config
         self._frame_sink: Any | None = None
         self._queued_speech_count = 0
         self._tts_frame_factory = tts_frame_factory or _default_tts_frame_factory
 
         self._runtime = VoiceProbeV3Runtime(
-            fallback_resolver=fallback_resolver,
+            fallback_resolver=resolved_fallback,
             on_decision=self._on_runtime_decision,
             continuation_grace_ms=config.continuation_grace_ms,
         )
