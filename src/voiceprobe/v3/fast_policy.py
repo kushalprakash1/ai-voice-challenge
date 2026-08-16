@@ -484,6 +484,51 @@ class RoutineSchedulingPolicy:
         # confirmation, which must not be interpreted as an insurance request.
         offered_pm_slot = _extract_offered_pm_slot(raw)
 
+        # A persistent demo profile may already contain an appointment
+        # created by an earlier assessment call. A statement describing that
+        # appointment is NOT confirmation of the transaction being attempted
+        # in this call. If PGAI asks whether to keep/reschedule/cancel it,
+        # continue naturally into the requested Friday-afternoon reschedule.
+        existing_appointment_prompt = (
+            _contains_any(
+                text,
+                (
+                    "you already have",
+                    "already have an appointment",
+                    "existing appointment",
+                    "current appointment",
+                ),
+            )
+            and _contains_any(
+                text,
+                (
+                    "booked",
+                    "scheduled",
+                    "appointment",
+                ),
+            )
+            and _contains_any(
+                text,
+                (
+                    "keep",
+                    "reschedule",
+                    "cancel",
+                    "different time",
+                    "different day",
+                ),
+            )
+        )
+
+        if existing_appointment_prompt:
+            return PolicyDecision(
+                DecisionKind.STATE_OBJECTIVE,
+                text=(
+                    "I'd like to reschedule it. "
+                    "I'm looking for Friday afternoon."
+                ),
+                reason="existing_appointment_reschedule",
+            )
+
         booking_confirmation = (
             offered_pm_slot is not None
             and _contains_any(
@@ -651,13 +696,33 @@ class RoutineSchedulingPolicy:
             ),
         )
 
+        # PGAI may select a concrete slot and then ask the patient to
+        # verify it: "I have two fifteen PM selected. Is that correct?"
+        selection_confirmation_cue = (
+            "selected" in text
+            and _contains_any(
+                text,
+                (
+                    "is that correct",
+                    "is this correct",
+                    "is that right",
+                    "does that look right",
+                ),
+            )
+        )
+
+        actionable_slot_cue = (
+            slot_offer_cue
+            or selection_confirmation_cue
+        )
+
         offered_earlier_weekday = _contains_any(text, _EARLIER_WEEKDAYS)
         offered_other_weekday = _contains_any(text, _OTHER_WEEKDAYS)
 
         if (
             offered_pm_slot is not None
             and offered_other_weekday
-            and slot_offer_cue
+            and actionable_slot_cue
             and not (
                 self._allow_earlier_week_afternoons
                 and offered_earlier_weekday
@@ -682,7 +747,7 @@ class RoutineSchedulingPolicy:
                 reason=reason,
             )
 
-        if offered_pm_slot is not None and slot_offer_cue:
+        if offered_pm_slot is not None and actionable_slot_cue:
             return PolicyDecision(
                 DecisionKind.GRANT_PERMISSION,
                 text=(

@@ -166,17 +166,27 @@ class SchedulingFlowTracker:
 
         slot_text = _extract_concrete_slot(raw)
 
-        if slot_text is not None and _contains_any(
-            text,
-            (
-                "scheduled",
-                "booked",
-                "appointment is confirmed",
-                "appointment has been confirmed",
-                "you're confirmed",
-                "you are confirmed",
-                "reserved",
-            ),
+        # Confirmation is transaction-relative, not merely lexical.
+        #
+        # Persistent test profiles may contain appointments created during an
+        # earlier call. Therefore "you already have ... booked for 2:15 PM"
+        # must never complete the current call unless VoiceProbe has already
+        # accepted a concrete slot during this runtime.
+        if (
+            slot_text is not None
+            and FlowStage.SLOT in self._state.communicated
+            and _contains_any(
+                text,
+                (
+                    "scheduled",
+                    "booked",
+                    "appointment is confirmed",
+                    "appointment has been confirmed",
+                    "you're confirmed",
+                    "you are confirmed",
+                    "reserved",
+                ),
+            )
         ):
             self._state.accepted_slot_text = slot_text
             self._state.booking_confirmation_text = raw
