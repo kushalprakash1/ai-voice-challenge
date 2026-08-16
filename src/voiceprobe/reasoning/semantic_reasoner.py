@@ -216,6 +216,43 @@ The workflow proposal field is for identifiable supporting/sub-workflows,
 not every verb in the conversation.
 
 
+MULTI-INTENT WORKFLOW TURNS
+
+One remote-agent utterance can contain BOTH:
+
+1. a workflow permission request
+2. a request for caller facts
+
+Example:
+
+"Would you like to create a demo patient profile?
+I just need your first and last name to get started."
+
+Represent BOTH semantic events:
+
+requested_action = "grant_permission"
+
+requested_facts = [
+  "first_name",
+  "last_name"
+]
+
+proposed_workflow = {
+  "kind": "profile_setup",
+  "description": "create a demo patient profile",
+  "requirement": "optional"
+}
+
+Do NOT discard the fact request merely because workflow permission occurs
+earlier in the same utterance.
+
+Do NOT convert the entire turn to answer_fact merely because facts are also
+requested.
+
+The planning layer will decide whether the workflow should be accepted and
+can answer the requested facts in the same caller response.
+
+
 WORKFLOW PERMISSION IS NOT A FACT REQUEST
 
 A workflow proposal such as:

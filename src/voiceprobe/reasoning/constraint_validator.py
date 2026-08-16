@@ -18,6 +18,7 @@ from voiceprobe.reasoning.action_plan import (
 )
 from voiceprobe.reasoning.turn_frame import (
     RequestedAction,
+    RequestedFact,
     SlotOption,
     TurnFrame,
 )
@@ -177,6 +178,13 @@ class ConstraintValidator:
             violations=violations,
         )
 
+        self._validate_fact_payload(
+            world=world,
+            turn=turn,
+            plan=plan,
+            violations=violations,
+        )
+
         if (
             plan.action
             is PatientActionKind.SELECT_OPTION
@@ -272,6 +280,125 @@ class ConstraintValidator:
                         "Option-selection turn requires selecting a "
                         "specific compatible option, requesting an "
                         "alternative, or clarifying."
+                    ),
+                )
+            )
+
+    @staticmethod
+    def _validate_fact_payload(
+        *,
+        world: PatientWorldModel,
+        turn: TurnFrame,
+        plan: ActionPlan,
+        violations: list[ConstraintViolation],
+    ) -> None:
+        """Prevent unrequested patient-data disclosure.
+
+        FULL_NAME is allowed to satisfy a joint first_name + last_name
+        request, but no other semantic substitution is permitted here.
+        """
+
+        if not plan.facts_to_answer:
+            return
+
+        requested = set(
+            turn.requested_facts
+        )
+
+        allowed = set(
+            requested
+        )
+
+        if {
+            RequestedFact.FIRST_NAME,
+            RequestedFact.LAST_NAME,
+        } <= requested:
+            allowed.add(
+                RequestedFact.FULL_NAME
+            )
+
+        unexpected = [
+            fact
+            for fact in plan.facts_to_answer
+            if fact not in allowed
+        ]
+
+        fact_keys = {
+            RequestedFact.FIRST_NAME: "first_name",
+            RequestedFact.LAST_NAME: "last_name",
+            RequestedFact.FULL_NAME: "name",
+            RequestedFact.DATE_OF_BIRTH: "date_of_birth",
+            RequestedFact.INSURANCE: "insurance",
+            RequestedFact.COMPLAINT: "complaint",
+            RequestedFact.SYMPTOM_DURATION: "duration",
+            RequestedFact.PREFERRED_DAY: "preferred_day",
+            RequestedFact.PREFERRED_TIME: "preferred_time",
+            RequestedFact.PROVIDER_PREFERENCE: "provider_preference",
+            RequestedFact.APPOINTMENT_TYPE: "appointment_type",
+            RequestedFact.PATIENT_STATUS: "patient_status",
+            RequestedFact.VISITED_BEFORE: "visited_before",
+            RequestedFact.PHONE_NUMBER: "phone_number",
+            RequestedFact.EMAIL: "email",
+            RequestedFact.ADDRESS: "address",
+        }
+
+        unavailable = [
+            fact
+            for fact in plan.facts_to_answer
+            if (
+                fact_keys[fact]
+                not in world.facts
+                or world.facts[
+                    fact_keys[fact]
+                ]
+                is None
+            )
+        ]
+
+        if unavailable:
+            violations.append(
+                ConstraintViolation(
+                    code="unavailable_fact_disclosure",
+                    detail=(
+                        "Plan attempted to disclose caller facts "
+                        "that are not present in authoritative truth: "
+                        + ", ".join(
+                            fact.value
+                            for fact in unavailable
+                        )
+                    ),
+                )
+            )
+
+        if unexpected:
+            violations.append(
+                ConstraintViolation(
+                    code="unrequested_fact_disclosure",
+                    detail=(
+                        "Plan attempted to disclose caller facts that "
+                        "the remote agent did not request: "
+                        + ", ".join(
+                            fact.value
+                            for fact in unexpected
+                        )
+                    ),
+                )
+            )
+
+        if (
+            plan.action
+            in {
+                PatientActionKind.WAIT,
+                PatientActionKind.DECLINE_PERMISSION,
+                PatientActionKind.END_CONVERSATION,
+            }
+        ):
+            violations.append(
+                ConstraintViolation(
+                    code="fact_disclosure_with_nonresponsive_action",
+                    detail=(
+                        "This action must not disclose requested "
+                        "caller facts."
                     ),
                 )
             )

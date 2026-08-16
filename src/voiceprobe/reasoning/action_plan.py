@@ -96,14 +96,25 @@ class ActionPlan(BaseModel):
         if (
             self.action
             is PatientActionKind.ANSWER_FACT
+            and not self.facts_to_answer
         ):
-            if not self.facts_to_answer:
-                raise ValueError(
-                    "ANSWER_FACT requires facts_to_answer."
-                )
-        elif self.facts_to_answer:
             raise ValueError(
-                "Only ANSWER_FACT may set facts_to_answer."
+                "ANSWER_FACT requires facts_to_answer."
+            )
+
+        # facts_to_answer is intentionally additive.
+        #
+        # A remote turn may ask for permission AND request caller facts.
+        # The primary action still describes the conversational decision,
+        # while this payload contains only authoritative facts that were
+        # separately requested.
+        if (
+            self.action
+            is PatientActionKind.WAIT
+            and self.facts_to_answer
+        ):
+            raise ValueError(
+                "WAIT cannot disclose caller facts."
             )
 
         normalized_reason = " ".join(

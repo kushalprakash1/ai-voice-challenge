@@ -834,3 +834,280 @@ def test_workflow_proposal_reaches_planner_context() -> None:
         "description": "create a demo patient profile",
         "requirement": "optional",
     }
+
+
+def test_joint_first_last_request_can_use_authoritative_full_name() -> None:
+    """Do not guess name components when authoritative full name suffices."""
+
+    from voiceprobe.reasoning.world_model import (
+        PatientWorldModel,
+    )
+
+    caller_world = PatientWorldModel(
+        scenario_id="full-name-test",
+        objective="Schedule an appointment.",
+        facts={
+            "name": "Jordan Lee",
+        },
+        constraints=[],
+    )
+
+    turn = TurnFrame.model_validate(
+        {
+            "speech_act": "question",
+            "workflow": "patient_intake",
+            "requested_action": "answer_fact",
+            "response_required": True,
+            "requested_facts": [
+                "first_name",
+                "last_name",
+            ],
+            "other_requested_facts": [],
+            "stated_facts": [],
+            "proposed_workflow": None,
+            "appointment_options": [],
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    planner = QwenPatientPlanner(
+        model="qwen3:14b",
+        url="http://unused.invalid/api/chat",
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: (_ for _ in ()).throw(
+                    AssertionError(
+                        "Deterministic name resolution reached Qwen."
+                    )
+                )
+            )
+        ),
+    )
+
+    try:
+        plan, violations = planner.plan(
+            world=caller_world,
+            turn=turn,
+        )
+    finally:
+        planner.close()
+
+    assert (
+        plan.action
+        is PatientActionKind.ANSWER_FACT
+    )
+
+    assert [
+        fact.value
+        for fact in plan.facts_to_answer
+    ] == [
+        "full_name"
+    ]
+
+    assert violations == ()
+
+
+def test_permission_plan_can_carry_requested_full_name() -> None:
+    """Workflow consent and a fact answer may coexist in one ActionPlan."""
+
+    from voiceprobe.reasoning.world_model import (
+        PatientWorldModel,
+    )
+
+    caller_world = PatientWorldModel(
+        scenario_id="compound-turn-test",
+        objective="Schedule an appointment.",
+        facts={
+            "name": "Maya Patel",
+        },
+        constraints=[],
+    )
+
+    response_plan = {
+        "action": "grant_permission",
+        "selected_option_index": None,
+        "facts_to_answer": [],
+        "reason_code": "workflow_enables_objective",
+        "confidence": 1.0,
+    }
+
+    def handler(
+        request: httpx.Request,
+    ) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "content": json.dumps(
+                        response_plan
+                    )
+                }
+            },
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            handler
+        )
+    )
+
+    planner = QwenPatientPlanner(
+        model="qwen3:14b",
+        url="http://ollama.test/api/chat",
+        client=client,
+    )
+
+    turn = TurnFrame.model_validate(
+        {
+            "speech_act": "question",
+            "workflow": "profile_setup",
+            "requested_action": "grant_permission",
+            "response_required": True,
+            "requested_facts": [
+                "first_name",
+                "last_name",
+            ],
+            "other_requested_facts": [],
+            "stated_facts": [],
+            "proposed_workflow": {
+                "kind": "profile_setup",
+                "description": "create a patient profile",
+                "requirement": "optional",
+            },
+            "appointment_options": [],
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    try:
+        plan, violations = planner.plan(
+            world=caller_world,
+            turn=turn,
+        )
+    finally:
+        planner.close()
+        client.close()
+
+    assert (
+        plan.action
+        is PatientActionKind.GRANT_PERMISSION
+    )
+
+    assert [
+        fact.value
+        for fact in plan.facts_to_answer
+    ] == [
+        "full_name"
+    ]
+
+    assert violations == ()
+
+
+def test_model_fact_payload_is_replaced_by_authoritative_resolution() -> None:
+    """Qwen may choose an action but never which patient facts are disclosed."""
+
+    from voiceprobe.reasoning.world_model import (
+        PatientWorldModel,
+    )
+
+    caller_world = PatientWorldModel(
+        scenario_id="maya-compound-test",
+        objective="Complete an identity and insurance check.",
+        facts={
+            "name": "Maya Patel",
+        },
+        constraints=[],
+    )
+
+    # Deliberately simulate the bad model output observed in historical
+    # replay: it tries to disclose unavailable component fields.
+    qwen_plan = {
+        "action": "grant_permission",
+        "selected_option_index": None,
+        "facts_to_answer": [
+            "first_name",
+            "last_name",
+        ],
+        "reason_code": "workflow_enables_objective",
+        "confidence": 1.0,
+    }
+
+    def handler(
+        request: httpx.Request,
+    ) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "content": json.dumps(
+                        qwen_plan
+                    )
+                }
+            },
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            handler
+        )
+    )
+
+    planner = QwenPatientPlanner(
+        model="qwen3:14b",
+        url="http://ollama.test/api/chat",
+        client=client,
+    )
+
+    turn = TurnFrame.model_validate(
+        {
+            "speech_act": "question",
+            "workflow": "profile_setup",
+            "requested_action": "grant_permission",
+            "response_required": True,
+            "requested_facts": [
+                "first_name",
+                "last_name",
+            ],
+            "other_requested_facts": [],
+            "stated_facts": [],
+            "proposed_workflow": {
+                "kind": "profile_setup",
+                "description": "create a demo patient profile",
+                "requirement": "optional",
+            },
+            "appointment_options": [],
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    try:
+        plan, violations = planner.plan(
+            world=caller_world,
+            turn=turn,
+        )
+    finally:
+        planner.close()
+        client.close()
+
+    assert (
+        plan.action
+        is PatientActionKind.GRANT_PERMISSION
+    )
+
+    assert [
+        fact.value
+        for fact in plan.facts_to_answer
+    ] == [
+        "full_name"
+    ]
+
+    assert violations == ()

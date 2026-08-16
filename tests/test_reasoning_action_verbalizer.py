@@ -227,3 +227,61 @@ def test_state_objective_is_generic() -> None:
         ==
         "I need to schedule an appointment for Friday afternoon."
     )
+
+
+def test_permission_and_full_name_are_composed() -> None:
+    from voiceprobe.reasoning.world_model import (
+        PatientWorldModel,
+    )
+
+    caller_world = PatientWorldModel(
+        scenario_id="compound-verbalizer-test",
+        objective="Schedule an appointment.",
+        facts={
+            "name": "Maya Patel",
+        },
+        constraints=[],
+    )
+
+    turn = TurnFrame.model_validate(
+        {
+            "speech_act": "question",
+            "workflow": "profile_setup",
+            "requested_action": "grant_permission",
+            "response_required": True,
+            "requested_facts": [
+                "first_name",
+                "last_name",
+            ],
+            "other_requested_facts": [],
+            "stated_facts": [],
+            "proposed_workflow": {
+                "kind": "profile_setup",
+                "description": "create a patient profile",
+                "requirement": "optional",
+            },
+            "appointment_options": [],
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    plan = ActionPlan(
+        action=PatientActionKind.GRANT_PERMISSION,
+        facts_to_answer=[
+            "full_name"
+        ],
+        reason_code="workflow_enables_objective",
+        confidence=1.0,
+    )
+
+    assert (
+        GenericActionVerbalizer().verbalize(
+            world=caller_world,
+            turn=turn,
+            plan=plan,
+        )
+        == "Yes, please. Maya Patel."
+    )

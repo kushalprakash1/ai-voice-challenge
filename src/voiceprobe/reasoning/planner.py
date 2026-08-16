@@ -67,8 +67,28 @@ FACT REQUESTS
 
 If requested_action is "answer_fact":
 action = "answer_fact"
-facts_to_answer must contain only the requested canonical facts that the
-caller can answer from patient_world.
+
+Caller facts themselves are authoritative and may be attached
+deterministically after planning.
+
+MULTI-INTENT TURNS
+
+A single remote utterance may ask permission AND request caller facts.
+
+Example:
+
+"Would you like to create a patient profile?
+I just need your first and last name."
+
+If remote_turn.requested_action = "grant_permission", the PRIMARY action
+must still be GRANT_PERMISSION, DECLINE_PERMISSION, or CLARIFY according to
+workflow policy.
+
+Do NOT change the primary action to ANSWER_FACT merely because
+requested_facts is non-empty.
+
+The deterministic caller layer can attach the requested authoritative facts
+to the approved primary action.
 
 SEARCH / WORKFLOW PERMISSION
 
@@ -203,6 +223,12 @@ class QwenPatientPlanner:
         )
 
         if deterministic is not None:
+            deterministic = self._attach_requested_facts(
+                world=world,
+                turn=turn,
+                plan=deterministic,
+            )
+
             violations = self.validator.validate(
                 world=world,
                 turn=turn,
@@ -229,6 +255,12 @@ class QwenPatientPlanner:
             validation_feedback=(),
         )
 
+        first = self._attach_requested_facts(
+            world=world,
+            turn=turn,
+            plan=first,
+        )
+
         violations = (
             self.validator.validate(
                 world=world,
@@ -245,6 +277,12 @@ class QwenPatientPlanner:
             turn=turn,
             recent_actions=recent_actions,
             validation_feedback=violations,
+        )
+
+        repaired = self._attach_requested_facts(
+            world=world,
+            turn=turn,
+            plan=repaired,
         )
 
         repaired_violations = (
@@ -308,6 +346,158 @@ class QwenPatientPlanner:
             and world.facts[key] is not None
         )
 
+    @classmethod
+    def _resolve_requested_facts(
+        cls,
+        *,
+        world: PatientWorldModel,
+        requested: Sequence[RequestedFact],
+    ) -> list[RequestedFact] | None:
+        """Resolve requested semantic facts against authoritative truth.
+
+        A joint first-name + last-name request may safely be satisfied by an
+        authoritative full name when component fields are unavailable.
+
+        We deliberately do NOT attempt to split a full name into guessed
+        components.
+        """
+
+        requested_list = list(
+            requested
+        )
+
+        if not requested_list:
+            return []
+
+        if all(
+            cls._world_has_fact(
+                world=world,
+                fact=fact,
+            )
+            for fact in requested_list
+        ):
+            return requested_list
+
+        requested_set = set(
+            requested_list
+        )
+
+        joint_name_request = {
+            RequestedFact.FIRST_NAME,
+            RequestedFact.LAST_NAME,
+        }
+
+        if joint_name_request <= requested_set:
+            if cls._world_has_fact(
+                world=world,
+                fact=RequestedFact.FULL_NAME,
+            ):
+                remaining = [
+                    fact
+                    for fact in requested_list
+                    if fact
+                    not in joint_name_request
+                ]
+
+                if all(
+                    cls._world_has_fact(
+                        world=world,
+                        fact=fact,
+                    )
+                    for fact in remaining
+                ):
+                    return [
+                        RequestedFact.FULL_NAME,
+                        *remaining,
+                    ]
+
+        return None
+
+    @classmethod
+    def _attach_requested_facts(
+        cls,
+        *,
+        world: PatientWorldModel,
+        turn: TurnFrame,
+        plan: ActionPlan,
+    ) -> ActionPlan:
+        """Derive fact disclosure exclusively from authoritative caller truth.
+
+        The language model may choose the PRIMARY conversational action.
+
+        It does NOT receive authority over which patient facts are disclosed.
+
+        facts_to_answer is therefore always recomputed from:
+
+            TurnFrame.requested_facts
+            +
+            PatientWorldModel
+
+        Any facts_to_answer proposed by Qwen are ignored and replaced.
+
+        This prevents:
+        - hallucinated patient data
+        - unavailable fields reaching verbalization
+        - unnecessary disclosure of unrequested fields
+        - model-selected substitutions for caller truth
+        """
+
+        payload = plan.model_dump(
+            mode="json",
+        )
+
+        # Never trust a model-generated fact payload.
+        payload["facts_to_answer"] = []
+
+        if not turn.requested_facts:
+            return ActionPlan.model_validate(
+                payload
+            )
+
+        if plan.action in {
+            PatientActionKind.WAIT,
+            PatientActionKind.DECLINE_PERMISSION,
+            PatientActionKind.END_CONVERSATION,
+            PatientActionKind.CLARIFY,
+        }:
+            return ActionPlan.model_validate(
+                payload
+            )
+
+        resolved = cls._resolve_requested_facts(
+            world=world,
+            requested=turn.requested_facts,
+        )
+
+        if resolved is None:
+            # ANSWER_FACT cannot truthfully complete without an available
+            # authoritative value, so fail closed as a clarification.
+            if (
+                plan.action
+                is PatientActionKind.ANSWER_FACT
+            ):
+                return ActionPlan(
+                    action=PatientActionKind.CLARIFY,
+                    reason_code="requested_fact_unavailable",
+                    confidence=plan.confidence,
+                )
+
+            # For a compound turn such as workflow permission + a fact
+            # request, preserve the independently valid primary decision
+            # but disclose no unsupported patient information.
+            return ActionPlan.model_validate(
+                payload
+            )
+
+        payload["facts_to_answer"] = [
+            fact.value
+            for fact in resolved
+        ]
+
+        return ActionPlan.model_validate(
+            payload
+        )
+
     def _deterministic_plan(
         self,
         *,
@@ -334,21 +524,14 @@ class QwenPatientPlanner:
             is RequestedAction.ANSWER_FACT
             and turn.requested_facts
         ):
-            unavailable = [
-                fact
-                for fact in turn.requested_facts
-                if not self._world_has_fact(
-                    world=world,
-                    fact=fact,
-                )
-            ]
+            resolved = self._resolve_requested_facts(
+                world=world,
+                requested=turn.requested_facts,
+            )
 
-            # Never allow a hallucinated or unsupported requested fact to
-            # crash verbalization or manufacture patient information.
-            #
-            # Complex missing-fact negotiation can get its own explicit
-            # action later. For now we fail closed with CLARIFY.
-            if unavailable:
+            # Never invent caller information when the authoritative world
+            # cannot satisfy the request.
+            if resolved is None:
                 return ActionPlan(
                     action=PatientActionKind.CLARIFY,
                     reason_code="requested_fact_unavailable",
@@ -357,9 +540,7 @@ class QwenPatientPlanner:
 
             return ActionPlan(
                 action=PatientActionKind.ANSWER_FACT,
-                facts_to_answer=list(
-                    turn.requested_facts
-                ),
+                facts_to_answer=resolved,
                 reason_code="semantic_fact_request",
                 confidence=turn.confidence,
             )

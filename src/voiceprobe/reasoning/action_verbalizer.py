@@ -93,16 +93,34 @@ class GenericActionVerbalizer:
             corrections=corrections,
         )
 
-        if correction_text and primary:
-            return (
-                f"{correction_text} "
-                f"{primary}"
+        # ANSWER_FACT already realizes its payload as the primary text.
+        # For multi-intent turns, the same fact payload is supplementary
+        # to another primary conversational action.
+        supplemental_fact_text = ""
+
+        if (
+            plan.action
+            is not PatientActionKind.ANSWER_FACT
+            and plan.facts_to_answer
+        ):
+            supplemental_fact_text = self._answer_facts(
+                world=world,
+                facts=plan.facts_to_answer,
             )
 
-        if correction_text:
-            return correction_text
+        pieces = [
+            piece
+            for piece in (
+                correction_text,
+                primary,
+                supplemental_fact_text,
+            )
+            if piece
+        ]
 
-        return primary
+        return " ".join(
+            pieces
+        )
 
     def _primary_text(
         self,
