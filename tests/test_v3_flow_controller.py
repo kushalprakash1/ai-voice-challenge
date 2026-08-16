@@ -1,0 +1,86 @@
+from voiceprobe.v3.flow_controller import SchedulingFlowController
+from voiceprobe.v3.flow_state import FlowStage
+from voiceprobe.v3.models import DecisionKind
+
+
+def test_latest_live_failure_sequence_advances_correct_fields() -> None:
+    controller = SchedulingFlowController()
+
+    first = controller.decide_burst(
+        [
+            (
+                "Thank you for calling Pivot Point Orthopedics. "
+                "Would you like to create a demo patient profile? "
+                "I just need your first and last name to get started."
+            )
+        ]
+    )
+
+    assert first.decision.kind == DecisionKind.CREATE_PROFILE
+    assert FlowStage.PROFILE in first.after.communicated
+    assert FlowStage.IDENTITY in first.after.communicated
+
+    second = controller.decide_burst(
+        [
+            "Your demo patient profile is set up and your date of birth is July 4th, 2000. How can I help you today?"
+        ]
+    )
+
+    assert second.decision.kind == DecisionKind.CORRECT_AND_STATE_OBJECTIVE
+    assert FlowStage.PROFILE in second.after.confirmed
+    assert FlowStage.DOB in second.after.communicated
+    assert FlowStage.DATE_TIME in second.after.communicated
+
+    third = controller.decide_burst(
+        [
+            "Thanks, Alex.",
+            "Let me check available appointments for you on Friday afternoon.",
+            "Thanks for confirming your date of birth of April 12th, 1998.",
+            (
+                "Can you tell me the reason for your visit? "
+                "For example, is this for a routine checkup, "
+                "a new patient consultation, a follow-up, or something else?"
+            ),
+        ]
+    )
+
+    assert third.decision.kind == DecisionKind.ANSWER_VISIT_DETAILS
+    assert FlowStage.DOB in third.after.confirmed
+    assert FlowStage.VISIT_REASON in third.after.communicated
+    assert FlowStage.APPOINTMENT_TYPE in third.after.communicated
+
+
+def test_provider_prompt_updates_provider_without_repeating_datetime() -> None:
+    controller = SchedulingFlowController()
+
+    result = controller.decide_burst(
+        [
+            (
+                "We have openings on Friday afternoon with two providers. "
+                "Would you prefer Dr. A or Dr. B, or is the first available okay?"
+            )
+        ]
+    )
+
+    assert result.decision.kind == DecisionKind.ANSWER_PROVIDER_PREFERENCE
+    assert result.decision.text == "First available is fine."
+    assert FlowStage.PROVIDER in result.after.communicated
+
+
+def test_august_28_branch_keeps_datetime_progress_without_booking() -> None:
+    controller = SchedulingFlowController()
+
+    result = controller.decide_burst(
+        [
+            "There are no Friday afternoon openings on August 21st.",
+            (
+                "Would you like to see afternoon openings on Friday, "
+                "August 28th, or check other days in the future?"
+            ),
+        ]
+    )
+
+    assert result.decision.kind == DecisionKind.CHOOSE_SEARCH_BRANCH
+    assert FlowStage.DATE_TIME in result.after.communicated
+    assert FlowStage.SLOT not in result.after.confirmed
+    assert not result.after.complete
