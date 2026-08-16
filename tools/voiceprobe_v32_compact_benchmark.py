@@ -91,6 +91,11 @@ async def main():
         print(" grounding=", p.grounding.value)
         print(" response=", trace.decision.text)
         print(" confidence=", p.confidence)
+
+        if trace.validation_error:
+            first_error_line = trace.validation_error.splitlines()[0]
+            print(" validation_error=", first_error_line)
+
         print(" latency_ms=", round(trace.total_ms, 1))
         print(" PASS=", ok)
 

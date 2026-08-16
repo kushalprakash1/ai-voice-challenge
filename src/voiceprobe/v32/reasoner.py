@@ -7,8 +7,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from pydantic import ValidationError
+
 from voiceprobe.v3.flow_state import FlowSnapshot
 from voiceprobe.v3.models import (
+    DecisionKind,
     PatientFacts,
     PolicyDecision,
 )
@@ -37,6 +40,7 @@ class ReasoningTrace:
     proposal: ContextualProposal
     decision: PolicyDecision
     reasoning_ms: float
+    validation_error: str | None = None
 
     @property
     def total_ms(self) -> float:
@@ -119,7 +123,42 @@ class ContextualReasoner:
 
         # This is the trust boundary. JSON-schema generation alone
         # is not treated as sufficient validation.
-        proposal = ContextualProposal.model_validate(raw)
+        #
+        # A malformed model response must never crash the voice runtime.
+        # We deliberately DO NOT coerce invalid values such as
+        # confidence=100 into apparently valid values such as 1.0.
+        try:
+            proposal = ContextualProposal.model_validate(raw)
+        except ValidationError as exc:
+            validation_error = str(exc)
+
+            # Preserve the typed trace shape for observability while making
+            # the proposal explicitly non-authoritative and unusable.
+            proposal = ContextualProposal.model_validate(
+                {
+                    "meaning": "invalid model output",
+                    "risk": "uncertain",
+                    "action": "clarify",
+                    "grounding": "none",
+                    "fact_key": "none",
+                    "response_text": "",
+                    "confidence": 0.0,
+                }
+            )
+
+            decision = PolicyDecision(
+                DecisionKind.CLARIFY,
+                text="Could you clarify that question?",
+                reason="v32_invalid_model_output",
+                confidence=0.0,
+            )
+
+            return ReasoningTrace(
+                proposal=proposal,
+                decision=decision,
+                reasoning_ms=elapsed,
+                validation_error=validation_error,
+            )
 
         decision = self.validator.validate(
             proposal=proposal,
@@ -131,4 +170,5 @@ class ContextualReasoner:
             proposal=proposal,
             decision=decision,
             reasoning_ms=elapsed,
+            validation_error=None,
         )

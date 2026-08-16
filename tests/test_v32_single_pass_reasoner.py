@@ -94,3 +94,43 @@ def test_reschedule_reason_can_generalize():
 
     assert trace.decision.kind is DecisionKind.ANSWER_FACT
     assert "Friday afternoon" in trace.decision.text
+
+
+
+def test_reasoner_fails_closed_on_invalid_model_output():
+    """Malformed model output must not crash the runtime."""
+
+    reasoner = ContextualReasoner(
+        backend=FakeBackend({
+            "meaning": "reason for rescheduling",
+            "risk": "low",
+            "action": "answer",
+            "grounding": "current_goal",
+            "fact_key": "none",
+            "response_text": (
+                "That time no longer works for me. "
+                "Friday afternoon works better."
+            ),
+
+            # Deliberately invalid percentage-style confidence.
+            "confidence": 100,
+        }),
+    )
+
+    trace = asyncio.run(
+        reasoner.reason(
+            remote_turn=(
+                "Why do you need to move your appointment?"
+            ),
+            snapshot=snapshot(),
+        )
+    )
+
+    assert trace.decision.kind is DecisionKind.CLARIFY
+    assert (
+        trace.decision.reason
+        == "v32_invalid_model_output"
+    )
+    assert trace.decision.confidence == 0.0
+    assert trace.validation_error is not None
+    assert "less than or equal to 1" in trace.validation_error
