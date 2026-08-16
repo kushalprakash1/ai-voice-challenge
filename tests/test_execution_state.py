@@ -441,3 +441,77 @@ def test_budget_policy_mismatch_is_rejected_on_reload(
             ),
             path=path,
         )
+
+
+
+def test_failed_call_evidence_round_trips(
+    tmp_path: Path,
+) -> None:
+    auth = authorization()
+    path = tmp_path / "failed-evidence.json"
+
+    ledger = PersistentCallLedger.initialize(
+        auth,
+        path=path,
+    )
+
+    ledger.start_call(
+        1,
+        provider_call_id="provider-failed-1",
+    )
+
+    failed = ledger.fail_call(
+        1,
+        error="max duration termination",
+        provider_call_id="provider-failed-1",
+        artifact_run_id="artifact-failed-1",
+        duration_seconds=182.5,
+    )
+
+    assert failed.status is CallStatus.FAILED
+    assert failed.artifact_run_id == "artifact-failed-1"
+    assert failed.duration_seconds == 182.5
+
+    recovered = PersistentCallLedger.load(
+        auth,
+        path=path,
+    )
+
+    entry = recovered.entries[0]
+
+    assert entry.status is CallStatus.FAILED
+    assert entry.provider_call_id == "provider-failed-1"
+    assert entry.artifact_run_id == "artifact-failed-1"
+    assert entry.duration_seconds == 182.5
+    assert entry.error == "max duration termination"
+
+
+def test_failed_call_without_artifact_evidence_still_round_trips(
+    tmp_path: Path,
+) -> None:
+    auth = authorization()
+    path = tmp_path / "legacy-failed-entry.json"
+
+    ledger = PersistentCallLedger.initialize(
+        auth,
+        path=path,
+    )
+
+    ledger.start_call(1)
+
+    ledger.fail_call(
+        1,
+        error="early transport failure",
+    )
+
+    recovered = PersistentCallLedger.load(
+        auth,
+        path=path,
+    )
+
+    entry = recovered.entries[0]
+
+    assert entry.status is CallStatus.FAILED
+    assert entry.artifact_run_id is None
+    assert entry.duration_seconds is None
+    assert entry.error == "early transport failure"

@@ -221,7 +221,13 @@ def prepare_one_call(
     return manifest
 
 
-def main() -> None:
+def _execution_exit_code(failed_count: int) -> int:
+    """Map suite outcome to a conventional CLI process status."""
+
+    return 1 if failed_count > 0 else 0
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(
         description="Execute exactly one authorized PGAI assessment call.",
     )
@@ -380,6 +386,8 @@ def main() -> None:
         )
     )
 
+    return _execution_exit_code(result.failed_count)
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

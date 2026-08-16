@@ -312,10 +312,24 @@ class PersistentCallLedger:
                             "Failed persisted call is missing an error."
                         )
 
+                    artifact_run_id = _optional_text(
+                        entry.get("artifact_run_id"),
+                        name="artifact_run_id",
+                    )
+
+                    raw_duration = entry.get("duration_seconds")
+                    duration_seconds = (
+                        None
+                        if raw_duration is None
+                        else _require_duration(raw_duration)
+                    )
+
                     ledger.fail_call(
                         position,
                         error=error_text,
                         provider_call_id=(provider_call_id),
+                        artifact_run_id=(artifact_run_id),
+                        duration_seconds=(duration_seconds),
                     )
 
             except CallLedgerError as error:
@@ -389,11 +403,15 @@ class PersistentCallLedger:
         *,
         error: str,
         provider_call_id: str | None = None,
+        artifact_run_id: str | None = None,
+        duration_seconds: float | None = None,
     ) -> CallLedgerEntry:
         entry = self._ledger.fail_call(
             position,
             error=error,
             provider_call_id=(provider_call_id),
+            artifact_run_id=(artifact_run_id),
+            duration_seconds=(duration_seconds),
         )
 
         self._persist()

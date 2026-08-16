@@ -79,8 +79,8 @@ def _assessment_failure_error(
             "Unsuccessful assessment result requires a failure reason."
         )
 
-    # Failed ledger entries do not currently retain artifact/duration fields,
-    # so preserve that evidence explicitly inside the failure description.
+    # Keep the evidence in the legacy error text for backwards-compatible
+    # diagnostics while also storing it structurally on the failed ledger entry.
     return (
         f"{failure_reason} "
         f"[artifact_run_id={artifact_run_id}; "
@@ -184,6 +184,8 @@ def run_authorized_suite(
                     position,
                     error=failure_error,
                     provider_call_id=provider_call_id,
+                    artifact_run_id=artifact_run_id,
+                    duration_seconds=(result.duration_seconds),
                 )
 
         except (
@@ -305,6 +307,8 @@ def run_persistent_authorized_suite(
                     position,
                     error=failure_error,
                     provider_call_id=provider_call_id,
+                    artifact_run_id=artifact_run_id,
+                    duration_seconds=(result.duration_seconds),
                 )
 
             # A failed assessment can still have incurred a real provider

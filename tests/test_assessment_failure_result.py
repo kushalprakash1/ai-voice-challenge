@@ -73,6 +73,8 @@ def test_in_memory_runner_marks_semantic_call_failure() -> None:
 
     assert entry.status is CallStatus.FAILED
     assert entry.provider_call_id == "asterisk-1"
+    assert entry.artifact_run_id == "artifact-1"
+    assert entry.duration_seconds == 42.5
     assert entry.error is not None
     assert "premature_remote_termination" in entry.error
     assert "artifact_run_id=artifact-1" in entry.error
@@ -112,6 +114,8 @@ def test_persistent_runner_marks_failure_and_reconciles_cost(
 
     assert entry.status is CallStatus.FAILED
     assert entry.provider_call_id == "asterisk-1"
+    assert entry.artifact_run_id == "artifact-1"
+    assert entry.duration_seconds == 42.5
     assert entry.error is not None
     assert "premature_remote_termination" in entry.error
     assert "artifact_run_id=artifact-1" in entry.error
