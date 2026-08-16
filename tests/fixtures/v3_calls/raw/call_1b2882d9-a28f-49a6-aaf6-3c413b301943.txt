@@ -1,0 +1,352 @@
+
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+/home/kushiv/ai-voice-challenge/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py:1011: UserWarning: dropout option adds dropout after all but last recurrent layer, so non-zero dropout expects num_layers greater than 1, but got dropout=0.2 and num_layers=1
+  super().__init__("LSTM", *args, **kwargs)
+/home/kushiv/ai-voice-challenge/.venv/lib/python3.12/site-packages/torch/nn/utils/weight_norm.py:144: FutureWarning: `torch.nn.utils.weight_norm` is deprecated in favor of `torch.nn.utils.parametrizations.weight_norm`.
+  WeightNorm.apply(module, name, dim)
+Loading Moonshine model from /home/kushiv/.cache/moonshine_voice/download.moonshine.ai/model/medium-streaming-en/quantized_26_07_30...
+Call UUID: 1b2882d9-a28f-49a6-aaf6-3c413b301943
+[started] This is
+[partial] This is
+[partial] This call may be required.
+[partial] This call may be recorded for
+[partial] This call may be recorded for quality and
+[partial] This call may be recorded for quality and training.
+[partial] This call may be recorded for quality and training purposes.
+[final]   This call may be recorded for quality and training purposes.
+[started] But I do.
+[partial] But I do.
+[partial] Para espanol.
+[partial] Para Español, opinel.
+[partial] Para Español, Opri Mael Dos.
+[final]   Para Español, Opri Mael Dos.
+
+[TURN] This call may be recorded for quality and training purposes. Para Español, Opri Mael Dos.
+
+
+========================================================================
+ASR TURN: This call may be recorded for quality and training purposes. Para Español, Opri Mael Dos.
+========================================================================
+[started] Thank you.
+[partial] Thank you.
+PATIENT TEXT:
+DECISION:     wait
+[WAIT] No patient response required; continuing to listen.
+[partial] Thank you for coming.
+[partial] Thank you for profile.
+[final]   Thank you for profile.
+[started] I just want to say
+[partial] I just want to say
+[partial] I just need your phone.
+[partial] I just need your first and last name.
+[final]   I just need your first and last name.
+
+[TURN] Thank you for profile. I just need your first and last name.
+
+
+========================================================================
+ASR TURN: Thank you for profile. I just need your first and last name.
+========================================================================
+PATIENT TEXT: I need to schedule an appointment for Friday afternoon. Alex Morgan.
+DECISION:     answer
+
+Interpreter:    4.577s
+Brain/ground:   0.000s
+Verbalizer:     0.000s
+State update:   0.000s
+Reasoning:      4.578s
+TTS:            2.408s
+Endpoint/queue: 0.655s
+Response prep:  7.641s
+Speech length:  4.750s
+Speaking...
+Speech complete.
+[started] Thank you.
+[partial] Thank you.
+[partial] Thanks.
+[final]   Thanks.
+[started] Alex.
+[partial] Alex.
+[partial] Alex Morgan.
+[final]   Alex Morgan.
+[started] What?
+[partial] What?
+[partial] Let me create your name.
+[partial] Let me create your demo patient.
+[partial] Let me create your demo patient profile.
+[partial] Let me create your demo patient profile so we can get
+[partial] Let me create your demo patient profile so we can get started with this.
+[partial] Let me create your demo patient profile so we can get started with scheduling.
+[partial] Let me create your demo patient profile so we can get started with scheduling your appointment.
+[final]   Let me create your demo patient profile so we can get started with scheduling your appointment.
+
+[TURN] Thanks. Alex Morgan. Let me create your demo patient profile so we can get started with scheduling your appointment.
+
+
+========================================================================
+ASR TURN: Thanks. Alex Morgan. Let me create your demo patient profile so we can get started with scheduling your appointment.
+========================================================================
+PATIENT TEXT:
+DECISION:     wait
+[WAIT] No patient response required; continuing to listen.
+[started] Okay.
+[partial] Okay.
+[partial] a new
+[partial] a new patient question.
+[partial] a new patient consultation.
+[partial] a new patient consultation, a follow-up.
+[partial] a new patient consultation, a follow-up, a routine.
+[partial] a new patient consultation, a follow-up, a routine office visit.
+[partial] a new patient consultation, a follow-up, a routine office visit, or a
+[partial] a new patient consultation, a follow-up, a routine office visit, or something else.
+[final]   a new patient consultation, a follow-up, a routine office visit, or something else.
+
+[TURN] a new patient consultation, a follow-up, a routine office visit, or something else.
+
+
+========================================================================
+ASR TURN: a new patient consultation, a follow-up, a routine office visit, or something else.
+========================================================================
+PATIENT TEXT: I need to schedule an appointment for Friday afternoon.
+DECISION:     answer
+
+Interpreter:    7.220s
+Brain/ground:   0.000s
+Verbalizer:     0.000s
+State update:   0.000s
+Reasoning:      7.221s
+TTS:            0.000s
+Endpoint/queue: 0.653s
+Response prep:  7.873s
+Speech length:  3.625s
+Speaking...
+Speech complete.
+[started] Okay.
+[partial] Okay.
+[partial] Is this the this?
+[partial] Is this the bit for AI?
+[partial] Is this the bit for a routine office?
+[partial] Is this the bit for a routine office visit?
+[partial] Is this visit for a routine office visit a fun
+[partial] Is this visit for a routine office visit a follow-up?
+[final]   Is this visit for a routine office visit a follow-up?
+[started] A new
+[partial] A new
+[partial] a new patient type.
+[partial] a new patient consultation.
+[partial] a new patient consultation or something.
+[partial] a new patient consultation or something else?
+[final]   a new patient consultation or something else?
+[started] What?
+[partial] What?
+[partial] Let me know if you have
+[partial] Let me know a bit more about
+[partial] Let me know a bit more about why you'd like to
+[partial] Let me know a bit more about why you'd like to be seen.
+[final]   Let me know a bit more about why you'd like to be seen.
+
+[TURN] Is this visit for a routine office visit a follow-up? a new patient consultation or something else? Let me know a bit more about why you'd like to be seen.
+
+
+========================================================================
+ASR TURN: Is this visit for a routine office visit a follow-up? a new patient consultation or something else? Let me know a bit more about why you'd like to be seen.
+========================================================================
+PATIENT TEXT: I need to schedule an appointment for Friday afternoon.
+DECISION:     answer
+
+Interpreter:    7.293s
+Brain/ground:   0.000s
+Verbalizer:     0.000s
+State update:   0.000s
+Reasoning:      7.294s
+TTS:            0.000s
+Endpoint/queue: 0.652s
+Response prep:  7.946s
+Speech length:  3.625s
+Speaking...
+Speech complete.
+[started] Yeah.
+[partial] Yeah.
+[partial] Is this a...
+[partial] Is this appointment for...
+[partial] Is this appointment for a general or a general?
+[partial] Is this appointment for a general office visit?
+[final]   Is this appointment for a general office visit?
+[started] a following.
+[partial] a following.
+[partial] a follow-up.
+[final]   a follow-up.
+[started] A new
+[partial] A new
+[partial] a new patient coming.
+[partial] a new patient consultation.
+[partial] a new patient consultation, or something.
+[partial] a new patient consultation, or something else.
+[final]   a new patient consultation, or something else.
+[started] Thank you.
+[partial] Thank you.
+[partial] Just a bit more.
+[partial] Just a bit more detail.
+[partial] Just a bit more detail will help me with
+[partial] Just a bit more detail will help me book the writing.
+[partial] Just a bit more detail will help me book the right type of visit.
+[partial] Just a bit more detail will help me book the right type of visit for you.
+[final]   Just a bit more detail will help me book the right type of visit for you.
+
+[TURN] Is this appointment for a general office visit? a follow-up. a new patient consultation, or something else. Just a bit more detail will help me book the right type of visit for you.
+
+
+========================================================================
+ASR TURN: Is this appointment for a general office visit? a follow-up. a new patient consultation, or something else. Just a bit more detail will help me book the right type of visit for you.
+========================================================================
+PATIENT TEXT: I need a new patient consultation.
+DECISION:     answer
+
+Interpreter:    4.379s
+Brain/ground:   0.000s
+Verbalizer:     0.000s
+State update:   0.000s
+Reasoning:      4.379s
+TTS:            0.000s
+Endpoint/queue: 0.654s
+Response prep:  5.034s
+Speech length:  2.675s
+Speaking...
+Speech complete.
+[started] Yeah.
+[partial] Yeah.
+[partial] We have a...
+[partial] We have opening.
+[partial] We have opening for new funding.
+[partial] We have opening for new patient coverage.
+[partial] We have opening for new patient consultation.
+[partial] We have opening for new patient consultation on Friday.
+[partial] We have opening for new patient consultation on Friday, August 11th.
+[partial] We have opening for new patient consultation on Friday, August 21st.
+[partial] We have opening for new patient consultation on Friday, August 21st with April
+[partial] We have opening for new patient consultation on Friday, August 21st with Abracur.
+[final]   We have opening for new patient consultation on Friday, August 21st with Abracur.
+[started] The available
+[partial] The available
+[partial] The available time is
+[partial] The available times are 9.
+[partial] The available times are 9 a.m.
+[final]   The available times are 9 a.m.
+[started] night.
+[partial] night.
+[partial] 945.
+[partial] 9.45 a.m.
+[final]   9.45 a.m.
+[started] And do you
+[partial] And do you
+[partial] and 1030.
+[partial] and 10.30 a.m.
+[final]   and 10.30 a.m.
+
+[TURN] We have opening for new patient consultation on Friday, August 21st with Abracur. The available times are 9 a.m. 9.45 a.m. and 10.30 a.m.
+[started] What is it?
+
+
+[partial] What is it?========================================================================
+
+ASR TURN: We have opening for new patient consultation on Friday, August 21st with Abracur. The available times are 9 a.m. 9.45 a.m. and 10.30 a.m.
+========================================================================
+PATIENT TEXT:
+DECISION:     wait
+[WAIT] No patient response required; continuing to listen.
+[partial] Would any...
+[final]   Would any...
+
+[TURN] Would any...
+
+
+========================================================================
+ASR TURN: Would any...
+========================================================================
+PATIENT TEXT: I need to schedule an appointment for Friday afternoon.
+DECISION:     answer
+
+Interpreter:    8.394s
+Brain/ground:   0.000s
+Verbalizer:     0.000s
+State update:   0.000s
+Reasoning:      8.394s
+TTS:            0.000s
+Endpoint/queue: 1.803s
+Response prep:  10.198s
+Speech length:  3.625s
+Speaking...
+Speech complete.
+[started] There are no
+[partial] There are no
+[partial] There are no Friday night.
+[partial] There are no Friday afternoon.
+[partial] There are no Friday afternoon openings on this.
+[partial] There are no Friday afternoon openings on August 20.
+[partial] There are no Friday afternoon openings on August 21st.
+[final]   There are no Friday afternoon openings on August 21st.
+[started] Would you?
+[partial] Would you?
+[partial] Would you like to look?
+[partial] Would you like to look at Africa?
+[partial] Would you like to look at afternoon times?
+[partial] Would you like to look at afternoon times on the fall?
+[partial] Would you like to look at afternoon times on the following Friday?
+
+[TURN] There are no Friday afternoon openings on August 21st.
+
+
+========================================================================
+ASR TURN: There are no Friday afternoon openings on August 21st.
+========================================================================
+[partial] Would you like to look at afternoon times on the following Friday, August 28th?
+[final]   Would you like to look at afternoon times on the following Friday, August 28th?
+
+[TURN] Would you like to look at afternoon times on the following Friday, August 28th?
+
+[HALF-DUPLEX] Dropping overlapping turn: 'Would you like to look at afternoon times on the following Friday, August 28th?'
+PATIENT TEXT:
+DECISION:     wait
+[WAIT] No patient response required; continuing to listen.
+[started] There are no
+[partial] There are no
+[partial] There are no frightening.
+[partial] There are no Friday afternoon.
+[partial] There are no Friday afternoon floors.
+[partial] There are no Friday afternoon slots available.
+[partial] There are no Friday afternoon slots available on August 1st.
+[partial] There are no Friday afternoon slots available on August 21st.
+[final]   There are no Friday afternoon slots available on August 21st.
+[started] Would you go?
+[partial] Would you go?
+[partial] Would you like to see us?
+[partial] Would you like to see afternoon and early?
+[partial] Would you like to see afternoon openings on the
+[partial] Would you like to see afternoon openings on Friday night?
+[partial] Would you like to see afternoon openings on Friday, August 28?
+[partial] Would you like to see afternoon openings on Friday, August 28th or 2020?
+[partial] Would you like to see afternoon openings on Friday, August 28th, or check other days in the future?
+AudioSocket disconnected.
+[final]   Would you like to see afternoon openings on Friday, August 28th, or check other days in the future?
+Autonomous call complete: call_id=1b2882d9-a28f-49a6-aaf6-3c413b301943
+{
+  "execution_id": "assessment-61791e53fafc",
+  "manifest_path": "artifacts/executions/assessment-61791e53fafc/manifest.json",
+  "call_count": 1,
+  "scenario_id": "autonomous-phone-diagnostic",
+  "destination": "+18054398008",
+  "prior_cumulative_commitment_usd": "10.60",
+  "next_call_reserved_usd": "0.30",
+  "entries": [
+    {
+      "position": 1,
+      "scenario_id": "autonomous-phone-diagnostic",
+      "status": "failed",
+      "provider_call_id": "1786856917.132",
+      "artifact_run_id": null,
+      "duration_seconds": null,
+      "error": "max_duration_termination: call reached VoiceProbe's maximum duration before the scheduling objective completed; booking_confirmed=False; offer_accepted=False; offered_day=None; offered_time=None [artifact_run_id=20260816T050842.655145Z-autonomous-phone-diagnostic; duration_seconds=182.46591077500125]"
+    }
+  ]
+}
+kushiv@A8:~/ai-voice-challenge$
