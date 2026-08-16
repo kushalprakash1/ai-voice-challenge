@@ -32,6 +32,7 @@ def test_runtime_busy_burst_discards_stale_non_actionable_work() -> None:
     emitted = []
     runtime = VoiceProbeV3Runtime(
         on_decision=emitted.append,
+        continuation_grace_ms=0,
     )
 
     class FakeFlux:

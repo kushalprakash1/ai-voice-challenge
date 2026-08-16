@@ -13,12 +13,14 @@ through a FIFO queue.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from .coalescer import ConversationBurstCoalescer
 from .models import DecisionKind, PolicyDecision
+from .turn_stabilizer import DEFAULT_CONTINUATION_GRACE_MS
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,18 +67,35 @@ class RemoteSpeechBurstBuffer:
     ) -> FluxIngressResult | None:
         """Ingest one Flux-confirmed remote end-of-turn transcript."""
 
-        normalized = " ".join(transcript.split())
+        return self.ingest_turns(
+            (transcript,),
+            emission_reason="immediate_end_of_turn",
+        )
+
+    def ingest_turns(
+        self,
+        turns: tuple[str, ...],
+        *,
+        emission_reason: str,
+    ) -> FluxIngressResult | None:
+        """Ingest one stabilized conversational burst."""
+
+        normalized = tuple(
+            " ".join(turn.split())
+            for turn in turns
+            if turn.strip()
+        )
 
         if not normalized:
             return None
 
         if self._response_busy:
-            self._pending.append(normalized)
+            self._pending.extend(normalized)
             return None
 
         return self._build_result(
-            (normalized,),
-            emission_reason="immediate_end_of_turn",
+            normalized,
+            emission_reason=emission_reason,
         )
 
     def mark_response_finished(
@@ -148,12 +167,20 @@ class FluxIngressController:
         *,
         burst_buffer: RemoteSpeechBurstBuffer | None = None,
         on_decision: DecisionSink | None = None,
+        continuation_grace_ms: float = DEFAULT_CONTINUATION_GRACE_MS,
     ) -> None:
+        if continuation_grace_ms < 0:
+            raise ValueError("continuation_grace_ms must be non-negative")
+
         self._burst_buffer = burst_buffer or RemoteSpeechBurstBuffer()
         self._on_decision = on_decision
         self._attached_service: Any | None = None
         self._last_start_transcript = ""
         self._turn_resumed_count = 0
+
+        self._continuation_grace_ms = float(continuation_grace_ms)
+        self._stabilized_pending: list[str] = []
+        self._stabilization_task: asyncio.Task[None] | None = None
 
     @property
     def burst_buffer(self) -> RemoteSpeechBurstBuffer:
@@ -166,6 +193,14 @@ class FluxIngressController:
     @property
     def turn_resumed_count(self) -> int:
         return self._turn_resumed_count
+
+    @property
+    def continuation_grace_ms(self) -> float:
+        return self._continuation_grace_ms
+
+    @property
+    def pending_stabilized_turns(self) -> tuple[str, ...]:
+        return tuple(self._stabilized_pending)
 
     def attach(self, stt_service: Any) -> None:
         """Register against DeepgramFluxSTTService.event_handler()."""
@@ -193,6 +228,7 @@ class FluxIngressController:
         ) -> None:
             del service
             self._last_start_transcript = transcript
+            self._cancel_stabilization_timer()
 
         @stt_service.event_handler("on_turn_resumed")
         async def _on_turn_resumed(
@@ -200,6 +236,7 @@ class FluxIngressController:
         ) -> None:
             del service
             self._turn_resumed_count += 1
+            self._cancel_stabilization_timer()
 
         @stt_service.event_handler("on_end_of_turn")
         async def _on_end_of_turn(
@@ -207,15 +244,80 @@ class FluxIngressController:
             transcript: str,
         ) -> None:
             del service
-            result = self._burst_buffer.ingest_end_of_turn(
-                transcript
-            )
-            await _call_sink(
-                self._on_decision,
-                result,
-            )
+            await self._ingest_stabilized_end_of_turn(transcript)
 
         self._attached_service = stt_service
+
+    async def _ingest_stabilized_end_of_turn(
+        self,
+        transcript: str,
+    ) -> None:
+        normalized = " ".join(transcript.split())
+
+        if not normalized:
+            return
+
+        self._stabilized_pending.append(normalized)
+        self._cancel_stabilization_timer()
+
+        if self._continuation_grace_ms == 0:
+            await self.flush_stabilized_pending()
+            return
+
+        self._stabilization_task = asyncio.create_task(
+            self._delayed_stabilization_flush()
+        )
+
+    async def _delayed_stabilization_flush(self) -> None:
+        try:
+            await asyncio.sleep(
+                self._continuation_grace_ms / 1000.0
+            )
+        except asyncio.CancelledError:
+            return
+
+        self._stabilization_task = None
+        await self.flush_stabilized_pending()
+
+    def _cancel_stabilization_timer(self) -> None:
+        task = self._stabilization_task
+        self._stabilization_task = None
+
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def flush_stabilized_pending(
+        self,
+    ) -> FluxIngressResult | None:
+        """Release the currently stabilized remote conversational burst."""
+
+        current_task = asyncio.current_task()
+        task = self._stabilization_task
+        self._stabilization_task = None
+
+        if (
+            task is not None
+            and task is not current_task
+            and not task.done()
+        ):
+            task.cancel()
+
+        if not self._stabilized_pending:
+            return None
+
+        turns = tuple(self._stabilized_pending)
+        self._stabilized_pending.clear()
+
+        result = self._burst_buffer.ingest_turns(
+            turns,
+            emission_reason="stabilized_end_of_turn",
+        )
+
+        await _call_sink(
+            self._on_decision,
+            result,
+        )
+        return result
 
     def mark_response_started(self) -> None:
         """Call immediately before response preparation/playback begins."""
@@ -235,4 +337,10 @@ class FluxIngressController:
         return result
 
     def clear_pending(self) -> tuple[str, ...]:
-        return self._burst_buffer.clear_pending()
+        self._cancel_stabilization_timer()
+
+        stabilized = tuple(self._stabilized_pending)
+        self._stabilized_pending.clear()
+
+        busy = self._burst_buffer.clear_pending()
+        return stabilized + busy

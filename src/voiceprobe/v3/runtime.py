@@ -21,6 +21,7 @@ from .flow_controller import FlowDecision, SchedulingFlowController
 from .flow_state import FlowSnapshot
 from .ingress import FluxIngressController, FluxIngressResult
 from .models import DecisionKind, PolicyDecision
+from .turn_stabilizer import DEFAULT_CONTINUATION_GRACE_MS
 
 
 class DecisionRoute(StrEnum):
@@ -92,6 +93,7 @@ class VoiceProbeV3Runtime:
         flow_controller: SchedulingFlowController | None = None,
         fallback_resolver: FallbackResolver | None = None,
         on_decision: RuntimeSink | None = None,
+        continuation_grace_ms: float = DEFAULT_CONTINUATION_GRACE_MS,
     ) -> None:
         self._flow = flow_controller or SchedulingFlowController()
         self._fallback_resolver = fallback_resolver
@@ -108,6 +110,7 @@ class VoiceProbeV3Runtime:
 
         self._ingress = FluxIngressController(
             on_decision=self._handle_ingress_result,
+            continuation_grace_ms=continuation_grace_ms,
         )
 
     @property

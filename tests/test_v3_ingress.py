@@ -136,6 +136,7 @@ def test_controller_registers_documented_flux_events() -> None:
     async def run() -> None:
         controller = FluxIngressController(
             on_decision=emitted.append,
+            continuation_grace_ms=0,
         )
         controller.attach(service)
 
@@ -172,6 +173,7 @@ def test_controller_drains_one_decision_after_response_finishes() -> None:
     async def run() -> None:
         controller = FluxIngressController(
             on_decision=emitted.append,
+            continuation_grace_ms=0,
         )
         controller.attach(service)
         controller.mark_response_started()
@@ -198,7 +200,7 @@ def test_controller_drains_one_decision_after_response_finishes() -> None:
 
 
 def test_double_attach_is_rejected() -> None:
-    controller = FluxIngressController()
+    controller = FluxIngressController(continuation_grace_ms=0)
     controller.attach(FakeFluxService())
 
     with pytest.raises(RuntimeError):
