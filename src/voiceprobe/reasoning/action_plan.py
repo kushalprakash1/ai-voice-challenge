@@ -30,6 +30,8 @@ class PatientActionKind(StrEnum):
 
     ANSWER_FACT = "answer_fact"
 
+    STATE_OBJECTIVE = "state_objective"
+
     GRANT_PERMISSION = "grant_permission"
     DECLINE_PERMISSION = "decline_permission"
 

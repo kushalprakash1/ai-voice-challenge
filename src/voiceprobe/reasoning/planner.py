@@ -6,6 +6,7 @@ import json
 from collections.abc import Sequence
 
 import httpx
+from pydantic import ValidationError
 
 from voiceprobe.reasoning.action_plan import (
     ActionPlan,
@@ -17,6 +18,7 @@ from voiceprobe.reasoning.constraint_validator import (
 )
 from voiceprobe.reasoning.turn_frame import (
     RequestedAction,
+    RequestedFact,
     TurnFrame,
 )
 from voiceprobe.reasoning.world_model import (
@@ -164,6 +166,7 @@ class QwenPatientPlanner:
         """
 
         deterministic = self._deterministic_plan(
+            world=world,
             turn=turn,
         )
 
@@ -240,8 +243,43 @@ class QwenPatientPlanner:
         )
 
     @staticmethod
-    def _deterministic_plan(
+    def _world_fact_key(
+        fact: RequestedFact,
+    ) -> str:
+        """Map semantic fact identifiers onto generic world-state keys."""
+
+        aliases = {
+            RequestedFact.FULL_NAME: "name",
+            RequestedFact.SYMPTOM_DURATION: "duration",
+        }
+
+        return aliases.get(
+            fact,
+            fact.value,
+        )
+
+    @classmethod
+    def _world_has_fact(
+        cls,
         *,
+        world: PatientWorldModel,
+        fact: RequestedFact,
+    ) -> bool:
+        """Return whether authoritative caller truth contains this fact."""
+
+        key = cls._world_fact_key(
+            fact
+        )
+
+        return (
+            key in world.facts
+            and world.facts[key] is not None
+        )
+
+    def _deterministic_plan(
+        self,
+        *,
+        world: PatientWorldModel,
         turn: TurnFrame,
     ) -> ActionPlan | None:
         """Resolve actions already established by structured semantics.
@@ -264,6 +302,27 @@ class QwenPatientPlanner:
             is RequestedAction.ANSWER_FACT
             and turn.requested_facts
         ):
+            unavailable = [
+                fact
+                for fact in turn.requested_facts
+                if not self._world_has_fact(
+                    world=world,
+                    fact=fact,
+                )
+            ]
+
+            # Never allow a hallucinated or unsupported requested fact to
+            # crash verbalization or manufacture patient information.
+            #
+            # Complex missing-fact negotiation can get its own explicit
+            # action later. For now we fail closed with CLARIFY.
+            if unavailable:
+                return ActionPlan(
+                    action=PatientActionKind.CLARIFY,
+                    reason_code="requested_fact_unavailable",
+                    confidence=turn.confidence,
+                )
+
             return ActionPlan(
                 action=PatientActionKind.ANSWER_FACT,
                 facts_to_answer=list(
@@ -272,6 +331,53 @@ class QwenPatientPlanner:
                 reason_code="semantic_fact_request",
                 confidence=turn.confidence,
             )
+
+        if (
+            turn.requested_action
+            is RequestedAction.STATE_OBJECTIVE
+        ):
+            return ActionPlan(
+                action=PatientActionKind.STATE_OBJECTIVE,
+                reason_code="semantic_objective_request",
+                confidence=turn.confidence,
+            )
+
+        if (
+            turn.requested_action
+            is RequestedAction.CHOOSE_OPTION
+        ):
+            compatible = (
+                self.validator.compatible_option_indices(
+                    world=world,
+                    turn=turn,
+                )
+            )
+
+            # No offered option satisfies caller truth.
+            #
+            # Do not ask a language model whether an incompatible option
+            # should somehow be accepted.
+            if not compatible:
+                return ActionPlan(
+                    action=PatientActionKind.REQUEST_ALTERNATIVE,
+                    reason_code="no_compatible_option",
+                    confidence=1.0,
+                )
+
+            # Exactly one option satisfies every hard constraint.
+            # The decision is mechanically determined.
+            if len(compatible) == 1:
+                return ActionPlan(
+                    action=PatientActionKind.SELECT_OPTION,
+                    selected_option_index=compatible[0],
+                    reason_code="only_compatible_option",
+                    confidence=1.0,
+                )
+
+            # Multiple policy-valid choices remain.
+            # This is an actual preference/decision problem and may be
+            # delegated to Qwen.
+            return None
 
         return None
 
@@ -318,75 +424,110 @@ class QwenPatientPlanner:
             ],
         }
 
-        response = self._client.post(
-            self.url,
-            json={
-                "model": self.model,
-                "stream": False,
+        messages: list[dict[str, str]] = [
+            {
+                "role": "system",
+                "content": (
+                    SYSTEM_PROMPT
+                    + "\n\nOUTPUT JSON SCHEMA:\n"
+                    + json.dumps(
+                        schema,
+                        separators=(",", ":"),
+                    )
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    context,
+                    separators=(",", ":"),
+                ),
+            },
+        ]
 
-                # Keep the first integration measurable.
-                # We can benchmark Qwen thinking mode separately later.
-                "think": False,
+        last_error: ValidationError | None = None
 
-                "format": schema,
+        for attempt in range(2):
 
-                "options": {
-                    "temperature": 0,
-                },
-
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            SYSTEM_PROMPT
-                            + "\n\nOUTPUT JSON SCHEMA:\n"
-                            + json.dumps(
-                                schema,
-                                separators=(",", ":"),
-                            )
-                        ),
+            response = self._client.post(
+                self.url,
+                json={
+                    "model": self.model,
+                    "stream": False,
+                    "think": False,
+                    "format": schema,
+                    "options": {
+                        "temperature": 0,
                     },
+                    "messages": messages,
+                },
+            )
+
+            response.raise_for_status()
+
+            payload = response.json()
+
+            try:
+                content = (
+                    payload[
+                        "message"
+                    ][
+                        "content"
+                    ]
+                )
+            except (
+                KeyError,
+                TypeError,
+            ) as error:
+                raise RuntimeError(
+                    "Planner response did not contain message.content."
+                ) from error
+
+            if not isinstance(
+                content,
+                str,
+            ):
+                raise RuntimeError(
+                    "Planner message.content must be text."
+                )
+
+            try:
+                return (
+                    ActionPlan.model_validate_json(
+                        content
+                    )
+                )
+
+            except ValidationError as error:
+                last_error = error
+
+                if attempt == 1:
+                    break
+
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": content,
+                    }
+                )
+
+                messages.append(
                     {
                         "role": "user",
-                        "content": json.dumps(
-                            context,
-                            separators=(",", ":"),
+                        "content": (
+                            "Your previous ActionPlan was structurally "
+                            "invalid.\n\n"
+                            "Validation error:\n"
+                            f"{error}\n\n"
+                            "Return a corrected ActionPlan. "
+                            "SELECT_OPTION must contain a valid "
+                            "selected_option_index. Do not invent an "
+                            "appointment option and do not violate hard "
+                            "patient constraints."
                         ),
-                    },
-                ],
-            },
-        )
+                    }
+                )
 
-        response.raise_for_status()
+        assert last_error is not None
 
-        payload = response.json()
-
-        try:
-            content = (
-                payload[
-                    "message"
-                ][
-                    "content"
-                ]
-            )
-        except (
-            KeyError,
-            TypeError,
-        ) as error:
-            raise RuntimeError(
-                "Planner response did not contain message.content."
-            ) from error
-
-        if not isinstance(
-            content,
-            str,
-        ):
-            raise RuntimeError(
-                "Planner message.content must be text."
-            )
-
-        return (
-            ActionPlan.model_validate_json(
-                content
-            )
-        )
+        raise last_error

@@ -111,6 +111,54 @@ def _matches_constraint(
 class ConstraintValidator:
     """Validate proposed plans against turn semantics and patient truth."""
 
+    def compatible_option_indices(
+        self,
+        *,
+        world: PatientWorldModel,
+        turn: TurnFrame,
+    ) -> tuple[int, ...]:
+        """Return every offered appointment option satisfying policy.
+
+        This is entirely generic.
+
+        It does not know Alex, Friday, afternoon, or any literal scenario.
+        Every option is tested using the same deterministic constraint
+        validation that protects final planner actions.
+        """
+
+        if (
+            turn.requested_action
+            is not RequestedAction.CHOOSE_OPTION
+        ):
+            return ()
+
+        compatible: list[int] = []
+
+        for index in range(
+            len(turn.appointment_options)
+        ):
+            probe = ActionPlan(
+                action=PatientActionKind.SELECT_OPTION,
+                selected_option_index=index,
+                reason_code="compatibility_probe",
+                confidence=1.0,
+            )
+
+            violations = self.validate(
+                world=world,
+                turn=turn,
+                plan=probe,
+            )
+
+            if not violations:
+                compatible.append(
+                    index
+                )
+
+        return tuple(
+            compatible
+        )
+
     def validate(
         self,
         *,

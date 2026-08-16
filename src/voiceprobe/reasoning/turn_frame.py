@@ -58,6 +58,9 @@ class RequestedAction(StrEnum):
     # Remote side requests one or more factual values.
     ANSWER_FACT = "answer_fact"
 
+    # Remote side asks what the caller wants / how it can help.
+    STATE_OBJECTIVE = "state_objective"
+
     # Permission to perform an action such as checking availability.
     GRANT_PERMISSION = "grant_permission"
 

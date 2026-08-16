@@ -187,13 +187,15 @@ def test_action_vocabulary_has_no_generic_agree() -> None:
 
 
 def test_planner_uses_structured_action_schema() -> None:
+    """Multiple compatible options should invoke the Qwen planner."""
+
     captured: dict[str, object] = {}
 
     response_plan = {
-        "action": "request_alternative",
-        "selected_option_index": None,
+        "action": "select_option",
+        "selected_option_index": 0,
         "facts_to_answer": [],
-        "reason_code": "no_compatible_option",
+        "reason_code": "choose_compatible_option",
         "confidence": 1.0,
     }
 
@@ -228,6 +230,46 @@ def test_planner_uses_structured_action_schema() -> None:
         client=client,
     )
 
+    # Both options satisfy the scenario's HARD constraints:
+    #
+    # day  = Friday
+    # time = afternoon
+    #
+    # Because more than one compatible option remains, deterministic
+    # filtering cannot uniquely decide and Qwen should be invoked.
+    ambiguous_turn = TurnFrame.model_validate(
+        {
+            "speech_act": "question",
+            "workflow": "scheduling",
+            "requested_action": "choose_option",
+            "response_required": True,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "appointment_options": [
+                {
+                    "day": "Friday",
+                    "date_text": None,
+                    "time": "2:30 PM",
+                    "daypart": None,
+                    "provider": None,
+                    "appointment_type": None,
+                },
+                {
+                    "day": "Friday",
+                    "date_text": None,
+                    "time": "4 PM",
+                    "daypart": None,
+                    "provider": None,
+                    "appointment_type": None,
+                },
+            ],
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
     try:
         plan, violations = planner.plan(
             world=build_world_model(
@@ -235,7 +277,7 @@ def test_planner_uses_structured_action_schema() -> None:
                     "autonomous-phone-diagnostic"
                 )
             ),
-            turn=build_multi_slot_turn(),
+            turn=ambiguous_turn,
         )
     finally:
         planner.close()
@@ -243,11 +285,14 @@ def test_planner_uses_structured_action_schema() -> None:
 
     assert (
         plan.action
-        is PatientActionKind.REQUEST_ALTERNATIVE
+        is PatientActionKind.SELECT_OPTION
     )
 
+    assert plan.selected_option_index == 0
     assert violations == ()
 
+    # This is the key assertion for this test:
+    # unlike zero/one-compatible-option cases, Qwen was actually called.
     payload = captured["payload"]
 
     assert isinstance(
@@ -255,14 +300,18 @@ def test_planner_uses_structured_action_schema() -> None:
         dict,
     )
 
+    assert payload["model"] == "qwen3:14b"
+    assert payload["stream"] is False
+    assert payload["think"] is False
+
     assert (
         payload["format"]
         == ActionPlan.model_json_schema()
     )
 
-    assert payload["think"] is False
-
-
+    assert payload["options"] == {
+        "temperature": 0,
+    }
 def test_fact_request_bypasses_planner_llm() -> None:
     """Structured fact requests should not be re-interpreted by Qwen."""
 
@@ -398,3 +447,271 @@ def test_wait_bypasses_planner_llm() -> None:
     assert calls == 0
     assert plan.action is PatientActionKind.WAIT
     assert violations == ()
+
+
+def test_unavailable_requested_fact_fails_closed() -> None:
+    """A semantic hallucination must never become invented patient data."""
+
+    calls = 0
+
+    def forbidden(
+        request: httpx.Request,
+    ) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+
+        raise AssertionError(
+            "Unavailable fact fallback reached planner LLM."
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            forbidden
+        )
+    )
+
+    planner = QwenPatientPlanner(
+        model="qwen3:14b",
+        url="http://ollama.test/api/chat",
+        client=client,
+    )
+
+    turn = TurnFrame.model_validate(
+        {
+            "speech_act": "question",
+            "workflow": "patient_intake",
+            "requested_action": "answer_fact",
+            "response_required": True,
+            "requested_facts": [
+                "phone_number"
+            ],
+            "other_requested_facts": [],
+            "appointment_options": [],
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 0.9,
+        }
+    )
+
+    try:
+        plan, violations = planner.plan(
+            world=build_world_model(
+                get_scenario(
+                    "autonomous-phone-diagnostic"
+                )
+            ),
+            turn=turn,
+        )
+    finally:
+        planner.close()
+        client.close()
+
+    assert calls == 0
+
+    assert (
+        plan.action
+        is PatientActionKind.CLARIFY
+    )
+
+    assert (
+        plan.reason_code
+        == "requested_fact_unavailable"
+    )
+
+    assert violations == ()
+
+
+def test_zero_compatible_options_bypass_planner_llm() -> None:
+    """Morning-only offers must deterministically request an alternative."""
+
+    calls = 0
+
+    def forbidden(
+        request: httpx.Request,
+    ) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+
+        raise AssertionError(
+            "Zero-compatible appointment set reached planner LLM."
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            forbidden
+        )
+    )
+
+    planner = QwenPatientPlanner(
+        model="qwen3:14b",
+        url="http://ollama.test/api/chat",
+        client=client,
+    )
+
+    try:
+        plan, violations = planner.plan(
+            world=build_world_model(
+                get_scenario(
+                    "autonomous-phone-diagnostic"
+                )
+            ),
+            turn=build_multi_slot_turn(),
+        )
+    finally:
+        planner.close()
+        client.close()
+
+    assert calls == 0
+
+    assert (
+        plan.action
+        is PatientActionKind.REQUEST_ALTERNATIVE
+    )
+
+    assert plan.selected_option_index is None
+    assert violations == ()
+
+
+def test_exactly_one_compatible_option_bypasses_planner_llm() -> None:
+    """A single policy-valid option is mechanically selected."""
+
+    calls = 0
+
+    def forbidden(
+        request: httpx.Request,
+    ) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+
+        raise AssertionError(
+            "Single-compatible appointment set reached planner LLM."
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            forbidden
+        )
+    )
+
+    planner = QwenPatientPlanner(
+        model="qwen3:14b",
+        url="http://ollama.test/api/chat",
+        client=client,
+    )
+
+    turn = TurnFrame.model_validate(
+        {
+            "speech_act": "question",
+            "workflow": "scheduling",
+            "requested_action": "choose_option",
+            "response_required": True,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "appointment_options": [
+                {
+                    "day": "Friday",
+                    "date_text": None,
+                    "time": "9 AM",
+                    "daypart": None,
+                    "provider": None,
+                    "appointment_type": None,
+                },
+                {
+                    "day": "Friday",
+                    "date_text": None,
+                    "time": "2:30 PM",
+                    "daypart": None,
+                    "provider": None,
+                    "appointment_type": None,
+                },
+            ],
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    try:
+        plan, violations = planner.plan(
+            world=build_world_model(
+                get_scenario(
+                    "autonomous-phone-diagnostic"
+                )
+            ),
+            turn=turn,
+        )
+    finally:
+        planner.close()
+        client.close()
+
+    assert calls == 0
+
+    assert (
+        plan.action
+        is PatientActionKind.SELECT_OPTION
+    )
+
+    assert plan.selected_option_index == 1
+    assert violations == ()
+
+
+def test_constraint_validator_lists_compatible_options() -> None:
+    world = build_world_model(
+        get_scenario(
+            "autonomous-phone-diagnostic"
+        )
+    )
+
+    turn = TurnFrame.model_validate(
+        {
+            "speech_act": "question",
+            "workflow": "scheduling",
+            "requested_action": "choose_option",
+            "response_required": True,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "appointment_options": [
+                {
+                    "day": "Friday",
+                    "date_text": None,
+                    "time": "9 AM",
+                    "daypart": None,
+                    "provider": None,
+                    "appointment_type": None,
+                },
+                {
+                    "day": "Friday",
+                    "date_text": None,
+                    "time": "2:30 PM",
+                    "daypart": None,
+                    "provider": None,
+                    "appointment_type": None,
+                },
+                {
+                    "day": "Friday",
+                    "date_text": None,
+                    "time": "4 PM",
+                    "daypart": None,
+                    "provider": None,
+                    "appointment_type": None,
+                },
+            ],
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 1.0,
+        }
+    )
+
+    assert (
+        ConstraintValidator().compatible_option_indices(
+            world=world,
+            turn=turn,
+        )
+        == (
+            1,
+            2,
+        )
+    )

@@ -4,9 +4,9 @@ IMPORTANT ARCHITECTURAL RULE:
 
 This module DOES NOT receive the patient profile.
 
-The semantic interpreter's only job is to determine what the remote
-agent communicated. Patient truth, goals, preferences, constraints,
-and decisions belong to later reasoning layers.
+The semantic interpreter determines only what the remote agent communicated.
+Patient truth, goals, preferences, constraints, and decisions belong to later
+reasoning layers.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import json
 from collections.abc import Sequence
 
 import httpx
+from pydantic import ValidationError
 
 from voiceprobe.reasoning.turn_frame import (
     TurnFrame,
@@ -38,7 +39,8 @@ Use only:
 
 Never invent information that appears in neither source.
 
-SOURCE-GROUNDING RULES
+
+SOURCE GROUNDING
 
 A field may be filled when:
 
@@ -46,26 +48,126 @@ A. it is explicitly present in latest_agent_turn, OR
 B. latest_agent_turn is clearly an elliptical continuation of recent
    remote-agent history and the value can safely be inherited.
 
-If neither is true, return null for that field.
+If neither is true, return null or an empty list for that field.
+
+Never infer patient information merely because it would commonly be requested
+at that point in a medical call.
+
+
+INCOMPLETE OR TRUNCATED ASR
+
+Telephony ASR may finalize incomplete fragments such as:
+
+"I just need you."
+"I need your..."
+"Can you give me..."
+
+If the fragment does NOT identify what information or action is being
+requested, DO NOT guess.
+
+Do not invent phone_number, name, insurance, date_of_birth, or another fact.
+
+For a fragment that is clearly incomplete and does not yet require a safe
+caller response, prefer:
+
+requested_action = "wait"
+response_required = false
+requested_facts = []
+other_requested_facts = []
+appointment_options = []
+
+The next complete remote-agent utterance can then be interpreted normally.
+
+
+OPEN ENDED CALL PURPOSE
+
+Examples:
+
+"How may I help you today?"
+"What can I help you with?"
+"What are you calling about?"
+
+These ask the caller to state its overall objective.
+
+Use:
+
+requested_action = "state_objective"
+response_required = true
+requested_facts = []
+other_requested_facts = []
+appointment_options = []
+
+
+STATE OBJECTIVE IS NOT THE SAME AS A DETAIL QUESTION
+
+Questions about a specific attribute of the appointment are fact requests.
+
+Examples:
+
+"What type of appointment do you need?"
+"What kind of visit is this?"
+"Is this a new patient consultation or a follow-up?"
+
+Use:
+
+requested_action = "answer_fact"
+requested_facts = ["appointment_type"]
+
+Do NOT classify these as state_objective.
+
+
+PROVIDER PREFERENCE
+
+Questions asking whether the caller wants a particular provider, doctor,
+clinician, or is open to anyone available are fact requests.
+
+Examples:
+
+"Do you have a specific provider you'd like to see?"
+"Are you open to any available provider?"
+"Do you have a provider preference?"
+
+Use:
+
+requested_action = "answer_fact"
+requested_facts = ["provider_preference"]
+
+These are NOT appointment-option selections unless actual appointment options
+with concrete scheduling alternatives are being offered.
+
+
+SEARCH PERMISSION IS NOT A FACT REQUEST
 
 Example:
 
-recent history:
-"Friday has 9 AM and 10 AM available."
+"Would you like me to check Friday afternoon appointments?"
 
-latest:
-"Which one would you like?"
+This is:
 
-Friday may be inherited because the latest utterance clearly refers
-to those previously offered options.
+requested_action = "grant_permission"
+response_required = true
+requested_facts = []
+other_requested_facts = []
+appointment_options = []
 
-But if there is NO recent history and latest says:
+The sentence itself must NEVER appear in requested_facts.
 
-"Which time would you like, 9 AM or 10 AM?"
 
-then day MUST be null.
+FACT REQUESTS
 
-Never infer Friday merely because a simulated caller might prefer Friday.
+Examples:
+
+"What insurance do you have?"
+requested_action = "answer_fact"
+requested_facts = ["insurance"]
+
+"Can I get your first and last name?"
+requested_action = "answer_fact"
+requested_facts = ["first_name", "last_name"]
+
+Use other_requested_facts only when the requested fact genuinely does not fit
+the canonical RequestedFact enum.
+
 
 STATUS / WAIT
 
@@ -77,45 +179,15 @@ Examples:
 
 Normally:
 
-speech_act = status
-requested_action = wait
+speech_act = "status"
+requested_action = "wait"
 response_required = false
 agent_is_still_working = true
 
-SEARCH PERMISSION IS NOT A FACT REQUEST
-
-Example:
-
-"Would you like me to check Friday afternoon appointments?"
-
-This is:
-
-requested_action = grant_permission
-response_required = true
-requested_facts = []
-other_requested_facts = []
-appointment_options = []
-
-The sentence itself must NEVER appear in requested_facts.
-
-FACT REQUESTS
-
-Examples:
-
-"What is your insurance?"
-requested_action = answer_fact
-requested_facts = ["insurance"]
-
-"Can I get your first and last name?"
-requested_action = answer_fact
-requested_facts = ["first_name", "last_name"]
-
-Use other_requested_facts only when the requested fact genuinely does
-not fit the canonical RequestedFact enum.
 
 APPOINTMENT OFFERS
 
-Extract EVERY concrete option actually communicated.
+Extract EVERY concrete appointment option actually communicated.
 
 Example:
 
@@ -127,6 +199,7 @@ Never collapse multiple times into one option.
 
 Do not convert these into a yes/no patient decision.
 The policy layer will evaluate them later.
+
 
 SEARCH PERMISSION VS OFFER
 
@@ -140,16 +213,49 @@ It contains ZERO appointment_options.
 
 is an actual appointment OFFER.
 
+
 CHOICE QUESTIONS
+
+Only use requested_action = "choose_option" when concrete alternatives are
+actually identifiable.
+
+Example:
 
 "Which time would you like: 9 AM, 9:45 AM or 10:30 AM?"
 
-requested_action = choose_option
+requested_action = "choose_option"
 
-and appointment_options contains all three times.
+appointment_options contains all three times.
 
-If no day is stated and no relevant recent history supplies a day,
-every option's day must be null.
+If there are zero concrete alternatives, NEVER emit choose_option.
+
+For example:
+
+"Do you have a specific provider you'd like to see?"
+
+is NOT choose_option because no concrete appointment alternatives were
+offered.
+
+
+CONVERSATIONAL INHERITANCE
+
+Example:
+
+recent history:
+"Friday has 9 AM and 10 AM available."
+
+latest:
+"Which one would you like?"
+
+Friday and the two options may be inherited because the latest utterance
+clearly refers to those previously offered options.
+
+But if there is NO relevant recent history and latest says:
+
+"Which time would you like, 9 AM or 10 AM?"
+
+then the option day MUST be null.
+
 
 ASR NORMALIZATION
 
@@ -163,9 +269,10 @@ Streaming telephony ASR may render equivalent times as:
 Preserve or normalize obvious intended clock meaning without inventing
 missing scheduling facts.
 
+
 CONFIDENCE
 
-confidence measures how confident you are in the semantic extraction.
+confidence measures confidence in the semantic extraction.
 
 It does NOT measure whether the remote agent is correct.
 
@@ -207,7 +314,12 @@ class StructuredTurnReasoner:
         agent_turn: str,
         recent_history: Sequence[str] = (),
     ) -> TurnFrame:
-        """Return source-grounded structured meaning."""
+        """Return source-grounded structured meaning.
+
+        One automatic repair attempt is allowed when Qwen returns output that
+        violates the semantic schema. The schema error is fed back to the
+        model rather than crashing the caller immediately.
+        """
 
         normalized_turn = " ".join(
             agent_turn.split()
@@ -219,8 +331,6 @@ class StructuredTurnReasoner:
             )
 
         context = {
-            # IMPORTANT:
-            # No patient/scenario/objective data belongs here.
             "recent_agent_history": [
                 " ".join(item.split())
                 for item in recent_history[-4:]
@@ -231,55 +341,99 @@ class StructuredTurnReasoner:
 
         schema = TurnFrame.model_json_schema()
 
-        response = self._client.post(
-            self.url,
-            json={
-                "model": self.model,
-                "stream": False,
-                "think": False,
-                "format": schema,
-                "options": {
-                    "temperature": 0,
-                },
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            SYSTEM_PROMPT
-                            + "\n\nOUTPUT JSON SCHEMA:\n"
-                            + json.dumps(
-                                schema,
-                                separators=(",", ":"),
-                            )
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            context,
-                            separators=(",", ":"),
-                        ),
-                    },
-                ],
+        messages: list[dict[str, str]] = [
+            {
+                "role": "system",
+                "content": (
+                    SYSTEM_PROMPT
+                    + "\n\nOUTPUT JSON SCHEMA:\n"
+                    + json.dumps(
+                        schema,
+                        separators=(",", ":"),
+                    )
+                ),
             },
-        )
+            {
+                "role": "user",
+                "content": json.dumps(
+                    context,
+                    separators=(",", ":"),
+                ),
+            },
+        ]
 
-        response.raise_for_status()
+        last_error: ValidationError | None = None
 
-        payload = response.json()
+        for attempt in range(2):
 
-        try:
-            content = payload["message"]["content"]
-        except (KeyError, TypeError) as error:
-            raise RuntimeError(
-                "Ollama response did not contain message.content."
-            ) from error
-
-        if not isinstance(content, str):
-            raise RuntimeError(
-                "Ollama message.content must be text."
+            response = self._client.post(
+                self.url,
+                json={
+                    "model": self.model,
+                    "stream": False,
+                    "think": False,
+                    "format": schema,
+                    "options": {
+                        "temperature": 0,
+                    },
+                    "messages": messages,
+                },
             )
 
-        return TurnFrame.model_validate_json(
-            content
-        )
+            response.raise_for_status()
+
+            payload = response.json()
+
+            try:
+                content = payload["message"]["content"]
+            except (KeyError, TypeError) as error:
+                raise RuntimeError(
+                    "Ollama response did not contain message.content."
+                ) from error
+
+            if not isinstance(
+                content,
+                str,
+            ):
+                raise RuntimeError(
+                    "Ollama message.content must be text."
+                )
+
+            try:
+                return TurnFrame.model_validate_json(
+                    content
+                )
+
+            except ValidationError as error:
+                last_error = error
+
+                if attempt == 1:
+                    break
+
+                # Give Qwen its invalid answer plus deterministic validator
+                # feedback and allow one correction.
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": content,
+                    }
+                )
+
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your previous structured output was invalid.\n\n"
+                            "Validation error:\n"
+                            f"{error}\n\n"
+                            "Correct the semantic interpretation using only "
+                            "the supplied agent speech/history. Do not invent "
+                            "missing facts or appointment options. Return a "
+                            "new schema-valid result."
+                        ),
+                    }
+                )
+
+        assert last_error is not None
+
+        raise last_error

@@ -241,3 +241,119 @@ def test_wait_frame_cannot_request_fact() -> None:
                 "confidence": 1.0,
             }
         )
+
+
+def test_reasoner_repairs_invalid_choose_option_frame() -> None:
+    """Schema feedback should automatically repair impossible semantics."""
+
+    calls = 0
+
+    invalid = {
+        "speech_act": "question",
+        "workflow": "patient_intake",
+        "requested_action": "choose_option",
+        "response_required": True,
+        "requested_facts": [],
+        "other_requested_facts": [],
+        "appointment_options": [],
+        "booking_confirmed": False,
+        "conversation_end_requested": False,
+        "agent_is_still_working": False,
+        "confidence": 0.9,
+    }
+
+    repaired = {
+        "speech_act": "question",
+        "workflow": "patient_intake",
+        "requested_action": "answer_fact",
+        "response_required": True,
+        "requested_facts": [
+            "provider_preference"
+        ],
+        "other_requested_facts": [],
+        "appointment_options": [],
+        "booking_confirmed": False,
+        "conversation_end_requested": False,
+        "agent_is_still_working": False,
+        "confidence": 0.95,
+    }
+
+    def handler(
+        request: httpx.Request,
+    ) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+
+        frame = (
+            invalid
+            if calls == 1
+            else repaired
+        )
+
+        return make_response(
+            frame
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            handler
+        )
+    )
+
+    reasoner = StructuredTurnReasoner(
+        model="qwen3:14b",
+        url="http://ollama.test/api/chat",
+        client=client,
+    )
+
+    try:
+        result = reasoner.interpret(
+            agent_turn=(
+                "Do you have a specific provider "
+                "you'd like to see?"
+            ),
+        )
+    finally:
+        reasoner.close()
+        client.close()
+
+    assert calls == 2
+
+    assert (
+        result.requested_action.value
+        == "answer_fact"
+    )
+
+    assert [
+        item.value
+        for item in result.requested_facts
+    ] == [
+        "provider_preference"
+    ]
+
+
+def test_incomplete_fragment_wait_frame_is_valid() -> None:
+    """Incomplete telephony fragments must be representable without guessing."""
+
+    frame = TurnFrame.model_validate(
+        {
+            "speech_act": "other",
+            "workflow": "unknown",
+            "requested_action": "wait",
+            "response_required": False,
+            "requested_facts": [],
+            "other_requested_facts": [],
+            "appointment_options": [],
+            "booking_confirmed": False,
+            "conversation_end_requested": False,
+            "agent_is_still_working": False,
+            "confidence": 0.6,
+        }
+    )
+
+    assert (
+        frame.requested_action.value
+        == "wait"
+    )
+
+    assert frame.requested_facts == []
