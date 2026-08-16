@@ -479,6 +479,33 @@ class RoutineSchedulingPolicy:
                 reason="appointment_type_requested",
             )
 
+        # Booking confirmation must outrank incidental intake language.
+        # Live run 6 contained "insurance card" inside the successful
+        # confirmation, which must not be interpreted as an insurance request.
+        offered_pm_slot = _extract_offered_pm_slot(raw)
+
+        booking_confirmation = (
+            offered_pm_slot is not None
+            and _contains_any(
+                text,
+                (
+                    "scheduled",
+                    "booked",
+                    "appointment is confirmed",
+                    "appointment has been confirmed",
+                    "you're confirmed",
+                    "you are confirmed",
+                    "reserved",
+                ),
+            )
+        )
+
+        if booking_confirmation:
+            return PolicyDecision(
+                DecisionKind.WAIT,
+                reason="booking_confirmation",
+            )
+
         if _contains_any(
             text,
             (
@@ -608,7 +635,6 @@ class RoutineSchedulingPolicy:
         # Concrete slot acceptance was not exercised by the two historical
         # recordings because both ended before booking. Treat it as a first-class
         # scheduling primitive rather than a generic yes/no response.
-        offered_pm_slot = _extract_offered_pm_slot(raw)
         slot_offer_cue = _contains_any(
             text,
             (
@@ -654,28 +680,6 @@ class RoutineSchedulingPolicy:
                 DecisionKind.DECLINE_INCOMPATIBLE_OFFER,
                 text=decline_text,
                 reason=reason,
-            )
-
-        booking_confirmation = (
-            offered_pm_slot is not None
-            and _contains_any(
-                text,
-                (
-                    "scheduled",
-                    "booked",
-                    "appointment is confirmed",
-                    "appointment has been confirmed",
-                    "you're confirmed",
-                    "you are confirmed",
-                    "reserved",
-                ),
-            )
-        )
-
-        if booking_confirmation:
-            return PolicyDecision(
-                DecisionKind.WAIT,
-                reason="booking_confirmation",
             )
 
         if offered_pm_slot is not None and slot_offer_cue:

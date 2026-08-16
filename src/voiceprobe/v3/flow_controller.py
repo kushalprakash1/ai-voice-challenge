@@ -11,7 +11,7 @@ from .flow_state import (
     SchedulingFlowTracker,
     extract_concrete_slot,
 )
-from .models import PolicyDecision
+from .models import DecisionKind, PolicyDecision
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +70,23 @@ class SchedulingFlowController:
         # not require a patient response.
         for turn in source:
             self._tracker.observe_remote_turn(turn)
+
+        observed = self._tracker.snapshot()
+
+        # An authoritative booking confirmation completes the mission.
+        # Trailing small-talk or intake wording in the same stabilized
+        # Flux burst must not generate another patient response.
+        if observed.complete:
+            return FlowDecision(
+                source_turns=source,
+                actionable_turn=None,
+                decision=PolicyDecision(
+                    DecisionKind.WAIT,
+                    reason="booking_confirmation",
+                ),
+                before=before,
+                after=observed,
+            )
 
         coalesced = self._coalescer.coalesce(source)
 
