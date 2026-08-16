@@ -13,6 +13,7 @@ from .models import DecisionKind, PatientFacts, PolicyDecision
 
 
 _INCOMPLETE_SUFFIXES = ("...", "…", ",", "-", "—", ":")
+_INCOMPLETE_FINAL_WORDS = frozenset({"and", "for", "of", "or", "to", "with"})
 
 
 def _norm(text: str) -> str:
@@ -32,6 +33,11 @@ def _is_obvious_fragment(text: str) -> bool:
     normalized = _norm(stripped)
     if normalized in {"would any", "can you", "would you", "do you"}:
         return True
+
+    words = normalized.rstrip(".?!").split()
+    if words and words[-1] in _INCOMPLETE_FINAL_WORDS:
+        return True
+
     return False
 
 
@@ -52,25 +58,18 @@ class RoutineSchedulingPolicy:
                 reason="obvious_incomplete_asr_fragment",
             )
 
-        # Boilerplate, acknowledgements, and status updates.
-        if _contains_any(
-            text,
-            (
-                "call may be recorded",
-                "para español",
-                "para espanol",
-            ),
-        ):
-            return PolicyDecision(
-                DecisionKind.WAIT,
-                reason="boilerplate",
-            )
-
+        # Acknowledgements and status updates. Boilerplate is evaluated only
+        # after actionable intents so a disclaimer prefix cannot swallow a
+        # real question in the same Flux EndOfTurn.
         if text in {
             "thanks.",
             "thanks",
             "thanks, alex.",
             "thanks, alex",
+            "great.",
+            "great",
+            "great, alex.",
+            "great, alex",
             "welcome to pivot point.",
             "welcome to pivot point",
             "thank you for calling.",
@@ -196,6 +195,7 @@ class RoutineSchedulingPolicy:
             text,
             (
                 "new patient consultation",
+                "routine checkup",
                 "routine office visit",
                 "general office visit",
                 "follow-up",
@@ -347,6 +347,22 @@ class RoutineSchedulingPolicy:
             return PolicyDecision(
                 DecisionKind.WAIT,
                 reason="informational_availability_statement",
+            )
+
+        # Pure boilerplate is non-actionable. This check deliberately comes
+        # after actionable intents because Flux may combine a recording
+        # disclaimer and the first scheduling question into one EndOfTurn.
+        if _contains_any(
+            text,
+            (
+                "call may be recorded",
+                "para español",
+                "para espanol",
+            ),
+        ):
+            return PolicyDecision(
+                DecisionKind.WAIT,
+                reason="boilerplate",
             )
 
         return PolicyDecision(

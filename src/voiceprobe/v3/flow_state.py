@@ -113,8 +113,16 @@ class SchedulingFlowTracker:
 
         if (
             "date of birth" in text
-            and "april 12" in text
-            and "1998" in text
+            and _contains_any(
+                text,
+                (
+                    "april 12, 1998",
+                    "april 12 1998",
+                    "april 12th, 1998",
+                    "april 12th 1998",
+                    "april twelfth nineteen ninety eight",
+                ),
+            )
         ):
             self._confirm(FlowStage.DOB)
 

@@ -1,0 +1,13 @@
+{"turn_index": 0, "eot_confidence": 0.8745, "text": "This call may be recorded for quality and training purposes. Thank you for calling Pivot Point Orthopedics. Would you like to create a demo patient profile? I just need your first and last name to get started.", "expected_kind": "create_profile"}
+{"turn_index": 1, "eot_confidence": 0.8647, "text": "Welcome to Pivot Point Orthopedics. Would you like --", "expected_kind": "hold"}
+{"turn_index": 2, "eot_confidence": 0.9497, "text": "Thanks, Alex. Would you like to create a demo patient profile so I can help you schedule your appointment?", "expected_kind": "create_profile"}
+{"turn_index": 3, "eot_confidence": 0.8872, "text": "I just need your last name to get started.", "expected_kind": "answer_fact"}
+{"turn_index": 4, "eot_confidence": 0.8843, "text": "Great, Alex. Can you please provide your last name so I can create your demo patient profile and help you schedule the appointment?", "expected_kind": "answer_fact"}
+{"turn_index": 5, "eot_confidence": 0.9683, "text": "Your demo patient profile is set up, and your date of birth is July fourth two thousand. How can I help you today?", "expected_kind": "correct_and_state_objective"}
+{"turn_index": 6, "eot_confidence": 0.855, "text": "Thanks, Alex. Let me check available appointments for you on Friday afternoon.", "expected_kind": "wait"}
+{"turn_index": 7, "eot_confidence": 0.9224, "text": "Thanks for confirming your date of birth as April twelfth nineteen ninety eight. Can you tell me the reason for your visit?", "expected_kind": "answer_complaint"}
+{"turn_index": 8, "eot_confidence": 0.8696, "text": "for example, is this for a routine checkup, a new patient consultation, a follow-up, or something else?", "expected_kind": "answer_appointment_type"}
+{"turn_index": 9, "eot_confidence": 0.854, "text": "Thanks for confirming your date of birth, Alex.", "expected_kind": "wait"}
+{"turn_index": 10, "eot_confidence": 0.8579, "text": "What is the reason for your visit? For example, is this for a routine checkup?", "expected_kind": "answer_visit_details"}
+{"turn_index": 11, "eot_confidence": 0.8691, "text": "We have several openings on Friday afternoon for", "expected_kind": "hold"}
+{"turn_index": 12, "eot_confidence": 0.9028, "text": "We have openings on Friday afternoon with two providers. Would you prefer to see doctor Zygmie Locosky or doctor Kelly Noble or the first available okay?", "expected_kind": "answer_provider_preference"}
