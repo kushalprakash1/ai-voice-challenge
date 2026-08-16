@@ -10,6 +10,7 @@ boundary is revalidated immediately before any AMI or socket side effect.
 
 from __future__ import annotations
 
+import os
 import socket
 import threading
 from collections.abc import Callable
@@ -58,6 +59,26 @@ from voiceprobe.telephony.ami import (
     OriginateResult,
 )
 from voiceprobe.verbalizers.deterministic import DeterministicNaturalVerbalizer
+
+VOICEPROBE_V3_LIVE_ENV = "VOICEPROBE_V3_LIVE"
+
+
+def v3_live_enabled_from_environment() -> bool:
+    """Return whether the explicit v3 live-media path is enabled."""
+
+    raw = os.environ.get(VOICEPROBE_V3_LIVE_ENV, "").strip().casefold()
+
+    if raw in {"", "0", "false", "no", "off"}:
+        return False
+
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+
+    raise ValueError(
+        f"{VOICEPROBE_V3_LIVE_ENV} must be one of "
+        "0/1, false/true, no/yes, or off/on"
+    )
+
 
 DEFAULT_ACCEPT_TIMEOUT_SECONDS = 10.0
 DEFAULT_ORIGINATE_TIMEOUT_MS = 30_000
@@ -350,9 +371,15 @@ class AsteriskAssessmentCallAdapter:
         self._tts_pcm_cache: dict[str, bytes] | None = None
         self._http_client: httpx.Client | None = None
 
-        self._media_executor: _MediaExecutor = (
-            media_executor if media_executor is not None else self._execute_media_call
-        )
+        self._media_executor: _MediaExecutor
+
+        if media_executor is not None:
+            # Explicit test/injected media always wins over environment selection.
+            self._media_executor = media_executor
+        elif v3_live_enabled_from_environment():
+            self._media_executor = self._execute_v3_media_call
+        else:
+            self._media_executor = self._execute_media_call
 
     def execute_call(
         self,
@@ -453,6 +480,64 @@ class AsteriskAssessmentCallAdapter:
             provider_cost_usd=None,
             assessment_succeeded=outcome.objective_complete,
             failure_reason=outcome.failure_reason,
+        )
+
+    def _execute_v3_media_call(
+        self,
+        request: AssessmentCallRequest,
+        call_id: UUID,
+        originate: Callable[[], OriginateResult],
+    ) -> AsteriskMediaOutcome:
+        """Execute the explicit v3 Pipecat/Flux live-media path."""
+
+        deepgram_api_key = os.environ.get("DEEPGRAM_API_KEY", "").strip()
+
+        if not deepgram_api_key:
+            # Fail before building the listener or invoking the originate callback.
+            raise CallExecutionError(
+                "VOICEPROBE_V3_LIVE=1 requires DEEPGRAM_API_KEY before dialing."
+            )
+
+        from voiceprobe.v3.asterisk_live import execute_v3_asterisk_media
+
+        pipeline, _ = self._ensure_runtime()
+        hangup_observer = (
+            originate.wait_for_hangup
+            if isinstance(originate, _MonitoredOriginate)
+            else None
+        )
+
+        result = execute_v3_asterisk_media(
+            request=request,
+            call_id=call_id,
+            originate=originate,
+            pipeline=pipeline,
+            voice=self._voice,
+            tts_pcm_cache=self._tts_pcm_cache,
+            deepgram_api_key=deepgram_api_key,
+            artifact_root=self._artifact_root,
+            host=self._host,
+            port=self._port,
+            accept_timeout_seconds=self._accept_timeout_seconds,
+            hangup_observer=hangup_observer,
+            ami_error_type=AMIClientError,
+            classify_termination=_classify_termination,
+            termination_failure_reason=_termination_failure_reason,
+        )
+
+        return AsteriskMediaOutcome(
+            call_id=result.call_id,
+            artifact_run_id=result.artifact_run_id,
+            duration_seconds=result.duration_seconds,
+            originate=result.originate,
+            hangup=result.hangup,
+            termination_status=result.termination_status,
+            objective_complete=result.objective_complete,
+            booking_confirmed=result.booking_confirmed,
+            offer_accepted=result.offer_accepted,
+            offered_day=result.offered_day,
+            offered_time=result.offered_time,
+            failure_reason=result.failure_reason,
         )
 
     def _execute_media_call(
