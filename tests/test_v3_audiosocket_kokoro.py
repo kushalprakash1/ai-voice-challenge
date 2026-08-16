@@ -315,3 +315,99 @@ def test_idle_silence_uses_same_shared_send_lock() -> None:
     thread.join(timeout=1)
 
     assert seen == [True]
+def test_playback_completion_can_chain_buffered_runtime_response() -> None:
+    from dataclasses import replace
+
+    from voiceprobe.v3.production import (
+        DEFAULT_PRODUCTION_FLUX_CONFIG,
+        PipecatRuntimeBridge,
+    )
+
+    class FakeFrame:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class FakeFlux:
+        def __init__(self) -> None:
+            self.handlers = {}
+
+        def event_handler(self, name):
+            def decorator(func):
+                self.handlers[name] = func
+                return func
+
+            return decorator
+
+    async def scenario():
+        sent = []
+
+        def send_audio(
+            connection,
+            pcm16,
+            *,
+            send_lock,
+            recorder,
+        ):
+            del connection, send_lock, recorder
+            sent.append(pcm16)
+
+        renderer = KokoroTelephonyRenderer(
+            pipeline=object(),
+            synthesize_fn=lambda **kwargs: [0.5],
+            normalize_fn=lambda text: text,
+            resample_fn=lambda audio: audio,
+            encode_fn=lambda audio: b"pcm",
+        )
+
+        speech = AudioSocketKokoroSpeechTask(
+            connection=object(),
+            renderer=renderer,
+            send_lock=threading.Lock(),
+            config=AudioSocketKokoroConfig(
+                echo_guard_seconds=0,
+            ),
+            send_audio_fn=send_audio,
+        )
+
+        config = replace(
+            DEFAULT_PRODUCTION_FLUX_CONFIG,
+            continuation_grace_ms=0,
+        )
+        bridge = PipecatRuntimeBridge(
+            config=config,
+            tts_frame_factory=FakeFrame,
+        )
+        bridge.bind_frame_sink(speech)
+        speech.set_on_playback_finished(
+            bridge.on_tts_stopped,
+        )
+
+        flux = FakeFlux()
+        bridge.attach_flux(flux)
+
+        first = await bridge.runtime.process_turns(
+            ["What is the reason for your visit?"]
+        )
+        assert first.response_ready
+        assert speech.queued_count == 1
+
+        await flux.handlers["on_end_of_turn"](
+            flux,
+            (
+                "We have Friday afternoon openings with two providers. "
+                "Would you prefer either provider or is first available okay?"
+            ),
+        )
+
+        assert bridge.runtime.ingress.burst_buffer.pending_turns
+        assert speech.queued_count == 1
+
+        await speech.wait_for_idle()
+
+        assert sent == [b"pcm", b"pcm"]
+        assert speech.queued_count == 2
+        assert speech.last_error is None
+        assert speech.busy is False
+        assert bridge.runtime.ingress.burst_buffer.response_busy is False
+
+    asyncio.run(scenario())

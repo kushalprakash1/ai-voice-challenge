@@ -246,10 +246,19 @@ class AudioSocketKokoroSpeechTask:
         )
 
     async def wait_for_idle(self) -> None:
-        task = self._playback_task
+        while True:
+            task = self._playback_task
 
-        if task is not None:
+            if task is None:
+                break
+
             await task
+
+            if self._last_error is not None:
+                raise self._last_error
+
+            if self._playback_task is task:
+                self._playback_task = None
 
         if self._last_error is not None:
             raise self._last_error
@@ -301,6 +310,11 @@ class AudioSocketKokoroSpeechTask:
             )
         finally:
             self._playback_active.clear()
+
+            current_task = asyncio.current_task()
+
+            if self._playback_task is current_task:
+                self._playback_task = None
 
         if not success:
             return
