@@ -1,4 +1,4 @@
-"""Small local Ollama structured-output backend."""
+"""Minimal current Ollama structured-output backend."""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ from urllib import request
 
 @dataclass(frozen=True, slots=True)
 class OllamaConfig:
-    model: str = "qwen3.5:4b"
+    model: str = "qwen3.5:0.8b"
     endpoint: str = "http://127.0.0.1:11434/api/chat"
-    timeout_seconds: float = 30.0
-    keep_alive: str = "10m"
-    num_ctx: int = 4096
-    temperature: float = 0.1
+    timeout_seconds: float = 45.0
+    keep_alive: str = "5m"
+    num_ctx: int = 2048
+    temperature: float = 0.0
 
 
 class OllamaBackend:
@@ -34,13 +34,13 @@ class OllamaBackend:
         schema: dict[str, Any],
     ) -> dict[str, Any]:
         return await asyncio.to_thread(
-            self._generate_json_sync,
+            self._generate_sync,
             system,
             prompt,
             schema,
         )
 
-    def _generate_json_sync(
+    def _generate_sync(
         self,
         system: str,
         prompt: str,
@@ -53,14 +53,8 @@ class OllamaBackend:
             "keep_alive": self.config.keep_alive,
             "format": schema,
             "messages": [
-                {
-                    "role": "system",
-                    "content": system,
-                },
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
             ],
             "options": {
                 "temperature": self.config.temperature,
@@ -71,9 +65,7 @@ class OllamaBackend:
         req = request.Request(
             self.config.endpoint,
             data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json"
-            },
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
 
@@ -85,12 +77,13 @@ class OllamaBackend:
                 response.read().decode("utf-8")
             )
 
-        content = envelope["message"]["content"]
-        parsed = json.loads(content)
+        result = json.loads(
+            envelope["message"]["content"]
+        )
 
-        if not isinstance(parsed, dict):
+        if not isinstance(result, dict):
             raise ValueError(
-                "Structured model output was not an object."
+                "Ollama returned a non-object structured response."
             )
 
-        return parsed
+        return result

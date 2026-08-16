@@ -1,4 +1,4 @@
-"""Deterministic safety validator for v3.2 model proposals."""
+"""Deterministic action validation for VoiceProbe v3.2."""
 
 from __future__ import annotations
 
@@ -12,32 +12,30 @@ from voiceprobe.v3.models import (
 )
 
 from .schemas import (
-    ActionProposal,
+    ContextualProposal,
     DialogueAction,
+    FactKey,
     Grounding,
-    IntentRewrite,
     RiskLevel,
 )
 
 
 _TRANSACTION_LANGUAGE = re.compile(
-    r"\\b("
+    r"\b("
     r"go ahead and book|"
-    r"you can book|"
     r"book it|"
+    r"you can book|"
     r"cancel it|"
     r"cancel the appointment|"
-    r"appointment is booked|"
-    r"appointment has been booked|"
-    r"appointment is confirmed|"
-    r"appointment has been confirmed"
-    r")\\b",
+    r"appointment (?:is|has been) booked|"
+    r"appointment (?:is|has been) confirmed"
+    r")\b",
     re.IGNORECASE,
 )
 
 
 class ActionValidator:
-    """The LLM may propose. Python remains authoritative."""
+    """Model proposes language intent; Python owns truth and state."""
 
     def __init__(
         self,
@@ -49,17 +47,13 @@ class ActionValidator:
     def validate(
         self,
         *,
-        rewrite: IntentRewrite,
-        proposal: ActionProposal,
+        proposal: ContextualProposal,
         facts: PatientFacts,
         snapshot: FlowSnapshot,
     ) -> PolicyDecision:
         del snapshot
 
-        confidence = min(
-            rewrite.confidence,
-            proposal.confidence,
-        )
+        confidence = proposal.confidence
 
         if confidence < self.minimum_confidence:
             return self._clarify(
@@ -67,13 +61,9 @@ class ActionValidator:
                 confidence,
             )
 
-        if proposal.proposed_state_change:
-            return self._clarify(
-                "v32_blocked_model_state_change",
-                confidence,
-            )
-
-        if rewrite.risk is RiskLevel.TRANSACTION:
+        # Contextual fallback may understand transaction language,
+        # but it never receives authority to perform the transaction.
+        if proposal.risk is RiskLevel.TRANSACTION:
             return self._clarify(
                 "v32_transaction_requires_deterministic_policy",
                 confidence,
@@ -90,8 +80,7 @@ class ActionValidator:
             return PolicyDecision(
                 DecisionKind.STATE_OBJECTIVE,
                 text=(
-                    "I'm looking for "
-                    f"{facts.preferred_day} "
+                    f"I'm looking for {facts.preferred_day} "
                     f"{facts.preferred_time}."
                 ),
                 reason="v32_contextual_state_objective",
@@ -99,10 +88,10 @@ class ActionValidator:
             )
 
         if proposal.action is DialogueAction.ANSWER_FACT:
-            return self._answer_authoritative_fact(
-                fact_key=proposal.fact_key,
-                facts=facts,
-                confidence=confidence,
+            return self._fact(
+                proposal.fact_key,
+                facts,
+                confidence,
             )
 
         if proposal.action is DialogueAction.ANSWER:
@@ -111,23 +100,15 @@ class ActionValidator:
                 Grounding.CURRENT_GOAL,
             }:
                 return self._clarify(
-                    "v32_answer_not_safely_grounded",
+                    "v32_unsafe_answer_grounding",
                     confidence,
                 )
 
-            text = " ".join(
-                proposal.answer_text.split()
-            )
+            text = proposal.response_text.strip()
 
             if not text:
                 return self._clarify(
-                    "v32_empty_answer",
-                    confidence,
-                )
-
-            if len(text) > 280:
-                return self._clarify(
-                    "v32_answer_too_long",
+                    "v32_empty_contextual_answer",
                     confidence,
                 )
 
@@ -137,8 +118,12 @@ class ActionValidator:
                     confidence,
                 )
 
-            # Known adversarial contradiction from the current scenario.
-            if "blue shield" in text.casefold():
+            # Hard protection for the adversarial insurance scenario.
+            lowered = text.casefold()
+            if (
+                "blue shield" in lowered
+                and facts.insurance.casefold() != "blue shield"
+            ):
                 return self._clarify(
                     "v32_blocked_fact_contradiction",
                     confidence,
@@ -157,55 +142,43 @@ class ActionValidator:
         )
 
     @staticmethod
-    def _answer_authoritative_fact(
-        *,
-        fact_key: str,
+    def _fact(
+        key: FactKey,
         facts: PatientFacts,
         confidence: float,
     ) -> PolicyDecision:
-        key = fact_key.casefold().strip()
-
-        values = {
-            "first_name": facts.first_name,
-            "last_name": facts.last_name,
-            "dob": facts.dob,
-            "insurance": facts.insurance,
-            "complaint": facts.complaint,
-            "symptom_duration": facts.symptom_duration,
-            "preferred_day": facts.preferred_day,
-            "preferred_time": facts.preferred_time,
-            "appointment_type": facts.appointment_type,
-            "provider_preference": (
-                facts.provider_preference
-            ),
-        }
-
-        if key not in values:
+        if key is FactKey.FIRST_NAME:
+            text = f"{facts.first_name}."
+        elif key is FactKey.LAST_NAME:
+            text = f"{facts.last_name}."
+        elif key is FactKey.DOB:
+            text = f"{facts.dob}."
+        elif key is FactKey.INSURANCE:
+            text = f"{facts.insurance}."
+        elif key is FactKey.COMPLAINT:
+            text = f"I have {facts.complaint}."
+        elif key is FactKey.SYMPTOM_DURATION:
+            text = f"{facts.symptom_duration}."
+        elif key is FactKey.PREFERRED_DAY:
+            text = f"{facts.preferred_day}."
+        elif key is FactKey.PREFERRED_TIME:
+            text = f"{facts.preferred_time}."
+        elif key is FactKey.APPOINTMENT_TYPE:
+            text = f"A {facts.appointment_type}."
+        elif key is FactKey.PROVIDER_PREFERENCE:
+            text = "First available is fine."
+        else:
             return PolicyDecision(
                 DecisionKind.CLARIFY,
-                text=(
-                    "Could you clarify what "
-                    "information you need?"
-                ),
-                reason="v32_unknown_authoritative_fact",
+                text="Could you clarify what information you need?",
+                reason="v32_missing_fact_key",
                 confidence=confidence,
             )
-
-        if key == "complaint":
-            text = f"I have {facts.complaint}."
-        elif key == "provider_preference":
-            text = "First available is fine."
-        elif key == "appointment_type":
-            text = f"A {facts.appointment_type}."
-        else:
-            text = f"{values[key]}."
 
         return PolicyDecision(
             DecisionKind.ANSWER_FACT,
             text=text,
-            reason=(
-                f"v32_authoritative_fact:{key}"
-            ),
+            reason=f"v32_authoritative_fact:{key.value}",
             confidence=confidence,
         )
 

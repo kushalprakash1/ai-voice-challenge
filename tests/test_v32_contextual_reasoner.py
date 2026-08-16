@@ -1,3 +1,5 @@
+"""Regression tests for the VoiceProbe v3.2 single-pass reasoner."""
+
 import asyncio
 
 from voiceprobe.v3.flow_state import (
@@ -8,14 +10,15 @@ from voiceprobe.v3.models import (
     DecisionKind,
     PatientFacts,
 )
-from voiceprobe.v32.reasoner import (
-    ContextualReasoner,
-)
+from voiceprobe.v32.reasoner import ContextualReasoner
 
 
 class FakeBackend:
-    def __init__(self, *responses):
-        self.responses = list(responses)
+    """Return one already-structured model proposal."""
+
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
 
     async def generate_json(
         self,
@@ -24,8 +27,14 @@ class FakeBackend:
         prompt,
         schema,
     ):
-        del system, prompt, schema
-        return self.responses.pop(0)
+        self.calls.append(
+            {
+                "system": system,
+                "prompt": prompt,
+                "schema": schema,
+            }
+        )
+        return self.response
 
 
 def snapshot():
@@ -50,146 +59,114 @@ def snapshot():
 
 
 def test_unseen_reschedule_reason():
+    """Novel wording should not require a phrase-specific production rule."""
+
     backend = FakeBackend(
         {
-            "meaning": (
-                "The clinic asks why the patient "
-                "wants to reschedule."
-            ),
-            "turn_kind": "question",
-            "subject": "reschedule reason",
+            "meaning": "reason for rescheduling",
             "risk": "low",
-            "requires_response": True,
-            "confidence": 0.98,
-        },
-        {
             "action": "answer",
-            "grounding": (
-                "low_risk_conversational"
+            "grounding": "current_goal",
+            "fact_key": "none",
+            "response_text": (
+                "That appointment time no longer works for me. "
+                "Friday afternoon works better."
             ),
-            "fact_key": "",
-            "answer_text": (
-                "That appointment time no longer "
-                "works for me. I'd like to move "
-                "it to Friday afternoon."
-            ),
-            "proposed_state_change": False,
-            "confidence": 0.97,
-        },
+            "confidence": 0.98,
+        }
     )
 
     trace = asyncio.run(
         ContextualReasoner(
-            backend=backend
+            backend=backend,
         ).reason(
             remote_turn=(
                 "What is the reason you're "
                 "changing your appointment?"
             ),
             snapshot=snapshot(),
+            recent_dialogue=(
+                "PGAI: You already have an appointment Tuesday at 2:15 PM.",
+                "PATIENT: I'd like to move it to Friday afternoon.",
+            ),
         )
     )
 
-    assert (
-        trace.decision.kind
-        is DecisionKind.ANSWER_FACT
-    )
-    assert (
-        trace.decision.reason
-        == "v32_contextual_answer"
-    )
-    assert (
-        "Friday afternoon"
-        in trace.decision.text
-    )
+    assert trace.decision.kind is DecisionKind.ANSWER_FACT
+    assert trace.decision.reason == "v32_contextual_answer"
+    assert "Friday afternoon" in trace.decision.text
+    assert "shoulder" not in trace.decision.text.casefold()
+    assert len(backend.calls) == 1
 
 
 def test_python_owns_insurance_fact():
+    """Model interpretation may select a fact, but Python owns its value."""
+
     backend = FakeBackend(
         {
-            "meaning": (
-                "The clinic asks for insurance."
-            ),
-            "turn_kind": "question",
-            "subject": "insurance",
+            "meaning": "asks insurance",
             "risk": "authoritative_fact",
-            "requires_response": True,
-            "confidence": 0.99,
-        },
-        {
             "action": "answer_fact",
-            "grounding": (
-                "authoritative_fact"
-            ),
+            "grounding": "authoritative_fact",
             "fact_key": "insurance",
-            "answer_text": "Blue Shield",
-            "proposed_state_change": False,
+
+            # Deliberately malicious/wrong model-generated text.
+            # It must never override authoritative PatientFacts.
+            "response_text": "Blue Shield",
             "confidence": 0.99,
-        },
+        }
     )
 
     trace = asyncio.run(
         ContextualReasoner(
             backend=backend,
             facts=PatientFacts(
-                insurance="Blue Cross"
+                insurance="Blue Cross",
             ),
         ).reason(
-            remote_turn=(
-                "Who is your health plan through?"
-            ),
+            remote_turn="Who is your health plan through?",
             snapshot=snapshot(),
         )
     )
 
+    assert trace.decision.kind is DecisionKind.ANSWER_FACT
     assert trace.decision.text == "Blue Cross."
+    assert "Blue Shield" not in trace.decision.text
     assert (
-        "Blue Shield"
-        not in trace.decision.text
+        trace.decision.reason
+        == "v32_authoritative_fact:insurance"
     )
+    assert len(backend.calls) == 1
 
 
 def test_model_cannot_change_transaction():
+    """Contextual reasoning never receives booking authority."""
+
     backend = FakeBackend(
         {
-            "meaning": (
-                "The clinic asks for booking "
-                "authorization."
-            ),
-            "turn_kind": "transaction",
-            "subject": "booking",
+            "meaning": "asks for booking authorization",
             "risk": "transaction",
-            "requires_response": True,
-            "confidence": 0.99,
-        },
-        {
             "action": "answer",
-            "grounding": (
-                "low_risk_conversational"
-            ),
-            "fact_key": "",
-            "answer_text": (
-                "Go ahead and book it."
-            ),
-            "proposed_state_change": True,
+            "grounding": "low_risk_conversational",
+            "fact_key": "none",
+            "response_text": "Go ahead and book it.",
             "confidence": 0.99,
-        },
+        }
     )
 
     trace = asyncio.run(
         ContextualReasoner(
-            backend=backend
+            backend=backend,
         ).reason(
             remote_turn="Should I book that?",
             snapshot=snapshot(),
         )
     )
 
-    assert (
-        trace.decision.kind
-        is DecisionKind.CLARIFY
-    )
+    assert trace.decision.kind is DecisionKind.CLARIFY
     assert (
         trace.decision.reason
-        == "v32_blocked_model_state_change"
+        == "v32_transaction_requires_deterministic_policy"
     )
+    assert "book it" not in trace.decision.text.casefold()
+    assert len(backend.calls) == 1

@@ -1,19 +1,15 @@
-"""Typed v3.2 semantic rewrite and planning schemas."""
+"""Strict model-boundary schemas for VoiceProbe v3.2."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
 
-
-class TurnKind(StrEnum):
-    QUESTION = "question"
-    INSTRUCTION = "instruction"
-    ACKNOWLEDGEMENT = "acknowledgement"
-    STATUS = "status"
-    TRANSACTION = "transaction"
-    OTHER = "other"
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+)
 
 
 class RiskLevel(StrEnum):
@@ -38,107 +34,54 @@ class Grounding(StrEnum):
     NONE = "none"
 
 
-REWRITE_JSON_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": [
-        "meaning",
-        "turn_kind",
-        "subject",
-        "risk",
-        "requires_response",
-        "confidence",
-    ],
-    "properties": {
-        "meaning": {"type": "string"},
-        "turn_kind": {
-            "type": "string",
-            "enum": [x.value for x in TurnKind],
-        },
-        "subject": {"type": "string"},
-        "risk": {
-            "type": "string",
-            "enum": [x.value for x in RiskLevel],
-        },
-        "requires_response": {"type": "boolean"},
-        "confidence": {
-            "type": "number",
-            "minimum": 0.0,
-            "maximum": 1.0,
-        },
-    },
-}
+class FactKey(StrEnum):
+    NONE = "none"
+    FIRST_NAME = "first_name"
+    LAST_NAME = "last_name"
+    DOB = "dob"
+    INSURANCE = "insurance"
+    COMPLAINT = "complaint"
+    SYMPTOM_DURATION = "symptom_duration"
+    PREFERRED_DAY = "preferred_day"
+    PREFERRED_TIME = "preferred_time"
+    APPOINTMENT_TYPE = "appointment_type"
+    PROVIDER_PREFERENCE = "provider_preference"
 
 
-ACTION_JSON_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": [
-        "action",
-        "grounding",
-        "fact_key",
-        "answer_text",
-        "proposed_state_change",
-        "confidence",
-    ],
-    "properties": {
-        "action": {
-            "type": "string",
-            "enum": [x.value for x in DialogueAction],
-        },
-        "grounding": {
-            "type": "string",
-            "enum": [x.value for x in Grounding],
-        },
-        "fact_key": {"type": "string"},
-        "answer_text": {"type": "string"},
-        "proposed_state_change": {"type": "boolean"},
-        "confidence": {
-            "type": "number",
-            "minimum": 0.0,
-            "maximum": 1.0,
-        },
-    },
-}
+class ContextualProposal(BaseModel):
+    """Only information the model is permitted to propose."""
 
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+    )
 
-@dataclass(frozen=True, slots=True)
-class IntentRewrite:
-    meaning: str
-    turn_kind: TurnKind
-    subject: str
+    meaning: str = Field(
+        min_length=1,
+        max_length=80,
+    )
+
     risk: RiskLevel
-    requires_response: bool
-    confidence: float
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "IntentRewrite":
-        return cls(
-            meaning=str(payload["meaning"]).strip(),
-            turn_kind=TurnKind(payload["turn_kind"]),
-            subject=str(payload["subject"]).strip(),
-            risk=RiskLevel(payload["risk"]),
-            requires_response=bool(payload["requires_response"]),
-            confidence=float(payload["confidence"]),
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class ActionProposal:
     action: DialogueAction
     grounding: Grounding
-    fact_key: str
-    answer_text: str
-    proposed_state_change: bool
-    confidence: float
+    fact_key: FactKey = FactKey.NONE
 
+    # This is used only for genuinely low-risk conversational answers.
+    # Authoritative facts are always rendered by Python.
+    response_text: str = Field(
+        default="",
+        max_length=160,
+    )
+
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    @field_validator("meaning", "response_text")
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "ActionProposal":
-        return cls(
-            action=DialogueAction(payload["action"]),
-            grounding=Grounding(payload["grounding"]),
-            fact_key=str(payload["fact_key"]).strip(),
-            answer_text=str(payload["answer_text"]).strip(),
-            proposed_state_change=bool(payload["proposed_state_change"]),
-            confidence=float(payload["confidence"]),
-        )
+    def normalize_text(cls, value: str) -> str:
+        return " ".join(value.split())
+
+
+PROPOSAL_JSON_SCHEMA = ContextualProposal.model_json_schema()
