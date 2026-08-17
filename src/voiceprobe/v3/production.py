@@ -12,6 +12,8 @@ environment verifies the real integration.
 
 from __future__ import annotations
 
+import os
+
 import inspect
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -25,6 +27,9 @@ from .runtime import (
     VoiceProbeV3Runtime,
 )
 from .semantic_router import V31SemanticRouter
+from voiceprobe.v32.runtime_fallback import (
+    V32SemanticFallbackResolver,
+)
 from .turn_stabilizer import DEFAULT_CONTINUATION_GRACE_MS
 
 
@@ -143,6 +148,72 @@ def build_production_flux_service(
     )
 
 
+def _v32_semantic_enabled() -> bool:
+    """Read the explicit production opt-in flag.
+
+    Unknown values fail closed instead of accidentally selecting a
+    different reasoning architecture.
+    """
+
+    raw = os.getenv(
+        "VOICEPROBE_V32_SEMANTIC",
+        "",
+    ).strip().casefold()
+
+    if raw in {
+        "",
+        "0",
+        "false",
+        "off",
+        "no",
+    }:
+        return False
+
+    if raw in {
+        "1",
+        "true",
+        "on",
+        "yes",
+    }:
+        return True
+
+    raise ValueError(
+        "VOICEPROBE_V32_SEMANTIC must be one of "
+        "0/1, false/true, off/on, or no/yes"
+    )
+
+
+def _build_v32_semantic_fallback(
+) -> V32SemanticFallbackResolver:
+    """Construct v3.2 only after an explicit opt-in."""
+
+    endpoint = os.getenv(
+        "VOICEPROBE_V32_OLLAMA_ENDPOINT",
+        "",
+    ).strip()
+
+    if not endpoint:
+        raise ValueError(
+            "VOICEPROBE_V32_OLLAMA_ENDPOINT is required "
+            "when VOICEPROBE_V32_SEMANTIC=1"
+        )
+
+    model = os.getenv(
+        "VOICEPROBE_V32_MODEL",
+        "qwen3.5:4b",
+    ).strip()
+
+    if not model:
+        raise ValueError(
+            "VOICEPROBE_V32_MODEL must not be empty"
+        )
+
+    return V32SemanticFallbackResolver.from_ollama(
+        endpoint=endpoint,
+        model=model,
+    )
+
+
 _DEFAULT_V31_FALLBACK = object()
 
 
@@ -167,19 +238,51 @@ class PipecatRuntimeBridge:
             )
 
         if fallback_resolver is _DEFAULT_V31_FALLBACK:
-            router = semantic_router or V31SemanticRouter(
-                use_embeddings=True,
-            )
-            resolved_fallback: FallbackResolver = router.resolve
-            self._semantic_router: V31SemanticRouter | None = router
+            if _v32_semantic_enabled():
+                if semantic_router is not None:
+                    raise ValueError(
+                        "semantic_router cannot be supplied when "
+                        "VOICEPROBE_V32_SEMANTIC is enabled."
+                    )
+
+                v32_resolver = (
+                    _build_v32_semantic_fallback()
+                )
+
+                resolved_fallback: FallbackResolver = (
+                    v32_resolver
+                )
+
+                self._semantic_router = None
+                self._v32_semantic_resolver = v32_resolver
+                self._semantic_mode = "v32"
+            else:
+                router = (
+                    semantic_router
+                    or V31SemanticRouter(
+                        use_embeddings=True,
+                    )
+                )
+
+                resolved_fallback = router.resolve
+
+                self._semantic_router: (
+                    V31SemanticRouter | None
+                ) = router
+
+                self._v32_semantic_resolver = None
+                self._semantic_mode = "v31"
         else:
             if semantic_router is not None:
                 raise ValueError(
                     "semantic_router cannot be combined with a custom "
                     "fallback_resolver."
                 )
+
             resolved_fallback = fallback_resolver
             self._semantic_router = None
+            self._v32_semantic_resolver = None
+            self._semantic_mode = "custom"
 
         self._config = config
         self._frame_sink: Any | None = None
@@ -192,6 +295,18 @@ class PipecatRuntimeBridge:
             on_decision=self._on_runtime_decision,
             continuation_grace_ms=config.continuation_grace_ms,
         )
+
+    @property
+    def semantic_mode(self) -> str:
+        """Active production fallback architecture."""
+
+        return self._semantic_mode
+
+    @property
+    def v32_semantic_resolver(
+        self,
+    ) -> V32SemanticFallbackResolver | None:
+        return self._v32_semantic_resolver
 
     @property
     def config(self) -> ProductionFluxConfig:

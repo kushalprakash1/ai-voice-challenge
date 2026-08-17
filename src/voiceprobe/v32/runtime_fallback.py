@@ -61,6 +61,7 @@ class V32SemanticFallbackResolver:
         self.last_trace: SemanticParseTrace | None = None
         self.last_routed: RoutedSemanticTurn | None = None
         self.last_resolution: SemanticResolution | None = None
+        self.last_backend_error: str | None = None
 
     @classmethod
     def from_ollama(
@@ -127,11 +128,38 @@ class V32SemanticFallbackResolver:
         # The semantic model never receives permission to mutate it.
         del snapshot
 
-        trace = await self.parser.parse(
-            remote_turn=agent_turn,
-            recent_dialogue=self.history,
-        )
+        try:
+            trace = await self.parser.parse(
+                remote_turn=agent_turn,
+                recent_dialogue=self.history,
+            )
+        except (
+            ConnectionError,
+            OSError,
+            RuntimeError,
+            TimeoutError,
+            ValueError,
+        ) as exc:
+            # A remote reasoning node is an optional semantic aid, never
+            # a reason for the telephony runtime itself to fail.
+            self.last_backend_error = (
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.last_trace = None
+            self.last_routed = None
+            self.last_resolution = None
 
+            return PolicyDecision(
+                DecisionKind.CLARIFY,
+                text=(
+                    "I may have missed that. "
+                    "Could you repeat the question?"
+                ),
+                reason="v32_semantic_backend_failure",
+                confidence=0.0,
+            )
+
+        self.last_backend_error = None
         self.last_trace = trace
 
         if trace.validation_error is not None:

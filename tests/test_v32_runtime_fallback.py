@@ -260,3 +260,43 @@ def test_unknown_semantics_fail_closed_without_silence():
         assert result.after == result.before
 
     asyncio.run(scenario())
+
+
+
+def test_backend_failure_fails_closed_without_state_mutation():
+    class FailingBackend:
+        async def generate_json(self, **kwargs):
+            del kwargs
+            raise TimeoutError("reasoning node unavailable")
+
+    async def scenario():
+        resolver = V32SemanticFallbackResolver(
+            parser=SemanticParser(
+                backend=FailingBackend(),
+            )
+        )
+
+        runtime = VoiceProbeV3Runtime(
+            fallback_resolver=resolver,
+        )
+
+        result = await runtime.process_turns([
+            (
+                "Could you explain the scheduling conflict "
+                "behind moving the existing visit?"
+            )
+        ])
+
+        assert result.route is DecisionRoute.FALLBACK
+        assert result.decision.kind is DecisionKind.CLARIFY
+        assert (
+            result.decision.reason
+            == "v32_semantic_backend_failure"
+        )
+        assert result.response_ready
+        assert result.after == result.before
+
+        assert resolver.last_backend_error is not None
+        assert "TimeoutError" in resolver.last_backend_error
+
+    asyncio.run(scenario())
