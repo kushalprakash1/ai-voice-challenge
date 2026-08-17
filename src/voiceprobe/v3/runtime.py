@@ -223,6 +223,11 @@ class VoiceProbeV3Runtime:
                     else flow_decision.actionable_turn
                 )
 
+                # Measure the complete fallback path. Previously
+                # policy_latency_ms only represented deterministic-policy
+                # latency and therefore hid model inference time.
+                fallback_started = time.perf_counter()
+
                 maybe_decision = self._fallback_resolver(
                     semantic_turn,
                     flow_decision.before,
@@ -232,6 +237,10 @@ class VoiceProbeV3Runtime:
                     decision = await maybe_decision
                 else:
                     decision = maybe_decision
+
+                policy_latency_ms += (
+                    time.perf_counter() - fallback_started
+                ) * 1000.0
 
                 # Apply only the fallback's returned structured action. The
                 # resolver itself never mutates flow state.
@@ -249,6 +258,25 @@ class VoiceProbeV3Runtime:
             policy_latency_ms=policy_latency_ms,
             ingress_reason=ingress_reason,
         )
+
+        # Stateful fallback implementations may observe the completed
+        # conversational exchange. This runs for BOTH deterministic and
+        # fallback decisions, allowing a contextual resolver to remember
+        # ordinary preceding turns without participating in their policy.
+        observer = getattr(
+            self._fallback_resolver,
+            "observe_exchange",
+            None,
+        )
+
+        if observer is not None:
+            maybe_observation = observer(
+                runtime_decision.source_turns,
+                runtime_decision.decision,
+            )
+
+            if inspect.isawaitable(maybe_observation):
+                await maybe_observation
 
         self._record(runtime_decision)
         await self._emit(runtime_decision)
