@@ -110,7 +110,7 @@ async def main():
 
     parser.add_argument(
         "--endpoint",
-        default="http://10.0.0.219:11434/api/chat",
+        default="http://127.0.0.1:11434/api/chat",
     )
 
     args = parser.parse_args()

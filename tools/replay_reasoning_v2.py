@@ -134,7 +134,7 @@ def main() -> None:
     parser.add_argument(
         "--url",
         default=(
-            "http://10.0.0.219:11434/api/chat"
+            "http://127.0.0.1:11434/api/chat"
         ),
     )
 

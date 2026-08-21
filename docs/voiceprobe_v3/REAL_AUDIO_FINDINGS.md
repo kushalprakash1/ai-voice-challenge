@@ -1,6 +1,6 @@
 # Real-audio findings: latest failed call at Flux EOT 0.85
 
-The stored inbound track for call `96f769c8-50b6-43cd-8a0a-39295b7791c3`
+The stored inbound track for call `example-call-002`
 was replayed through Deepgram Flux at native 8 kHz, mono, linear16 with
 `eot_threshold=0.85`.
 

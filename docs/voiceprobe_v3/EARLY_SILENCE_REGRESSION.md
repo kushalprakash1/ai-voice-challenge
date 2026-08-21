@@ -2,7 +2,7 @@
 
 ## Evidence
 
-Live run `20260816T102721.209962Z-autonomous-phone-diagnostic` ended after
+A historical live run ended after
 about 66 seconds with no accepted slot and no booking confirmation.
 
 The new observability path showed the exact failure sequence:
@@ -28,8 +28,8 @@ The deterministic policy now:
 - responds to `Are you still there?` by confirming presence and restating the
   scheduling objective.
 
-The separate split-profile coalescing behavior is intentionally not changed in
-this patch. The remote scheduler accepted `Alex Morgan.` and created the
+The separate split-profile coalescing behavior is intentionally unchanged.
+The remote scheduler accepted `Alex Morgan.` and created the
 profile, so it was not the termination defect.
 
 ## Scope

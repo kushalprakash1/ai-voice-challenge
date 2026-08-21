@@ -10,7 +10,7 @@ export VOICEPROBE_V3_LIVE=1
 export DEEPGRAM_API_KEY="..."
 ```
 
-When enabled, one authorized assessment attempt follows this order:
+When enabled, one authorized call follows this order:
 
 ```text
 localhost AudioSocket listener
@@ -50,4 +50,4 @@ invent split legacy fields from free-form confirmation text.
 - An explicitly injected media executor still takes precedence for tests.
 - Missing `DEEPGRAM_API_KEY` fails before the listener or Originate side effect.
 - The legacy `_execute_media_call` implementation is not edited.
-- Installing this patch does not connect to Deepgram, Asterisk, or a phone.
+- Enabling the code path alone does not connect to Deepgram, Asterisk, or a phone.

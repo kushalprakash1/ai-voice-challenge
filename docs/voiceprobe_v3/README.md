@@ -28,8 +28,8 @@ telephony audio
 
 ## Frozen evidence
 
-`tests/fixtures/v3_calls/raw/` contains the two complete live-call terminal
-records used to define this rebuild.
+`tests/fixtures/v3_calls/raw/` contains sanitized terminal examples. Structured
+regression cases preserve routing behavior without publishing raw calls.
 
 `tests/fixtures/v3_calls/regression_cases.jsonl` contains the first set of
 turn-level expected outcomes. It includes both successful historical behavior
@@ -108,7 +108,7 @@ Authoritative patient facts remain immutable.
 
 No live call is allowed merely because text tests pass.
 
-A release candidate must replay the stored inbound audio from previous calls
+A release build must replay the stored inbound audio from previous calls
 through:
 
 ```text

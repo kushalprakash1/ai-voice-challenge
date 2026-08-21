@@ -9,7 +9,6 @@ from voiceprobe.reasoning.semantic_reasoner import (
     StructuredTurnReasoner,
 )
 
-
 CASES = (
     {
         "label": "STATUS / WAIT",
@@ -30,7 +29,7 @@ CASES = (
         ),
     },
     {
-        # Critical source-grounding test:
+        # Verify that source grounding rejects unsupported patient facts.
         # Friday must NOT appear here because latest speech and history
         # contain no day.
         "label": "CONTEXTLESS MULTI-SLOT CHOICE",
@@ -78,7 +77,7 @@ def main() -> None:
     parser.add_argument(
         "--url",
         default=(
-            "http://10.0.0.219:11434/api/chat"
+            "http://127.0.0.1:11434/api/chat"
         ),
     )
 

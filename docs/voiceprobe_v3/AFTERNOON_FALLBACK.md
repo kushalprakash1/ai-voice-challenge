@@ -2,8 +2,7 @@
 
 ## Evidence
 
-The 2026-08-16 live Asterisk/Flux call
-`20260816T100255.886972Z-autonomous-phone-diagnostic` successfully carried
+A recorded live Asterisk/Flux run successfully carried
 two-way audio but failed the scheduling objective.
 
 The artifact showed two late generic patient replies (`Yes, please.`), followed
@@ -38,5 +37,5 @@ constraint:
 7. Flow completion still requires explicit remote booked/scheduled/confirmed
    evidence.
 
-This patch does not modify telephony, Asterisk, AudioSocket, Deepgram Flux,
+This fallback does not modify telephony, Asterisk, AudioSocket, Deepgram Flux,
 Kokoro, call authorization, or retry behavior.

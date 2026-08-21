@@ -34,4 +34,4 @@ The output sink is deliberately not a Pipecat network transport. That avoids
 rewriting a stable AudioSocket sender merely to satisfy a transport abstraction.
 
 This phase still does not modify AMI Originate, socket ownership, the Asterisk
-assessment adapter, or place a live call.
+call adapter, or place a live call.

@@ -217,6 +217,20 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Local VoiceProbe diagnostics, recordings, benchmarks, and debug artifacts.
-# Public submission evidence is exported separately under submission/.
+# Local VoiceProbe diagnostics, recordings, model data, and replay output.
 /artifacts/
+*.wav
+*.ogg
+*.mp3
+*.pcm
+/models/
+/model-cache/
+/.cache/
+/.voiceprobe_*_backup/
+/*benchmark*.json
+/*benchmark*.jsonl
+/*replay*.json
+/*replay*.jsonl
+/accent-cache/
+/melo-accent-cache/
+/.local_archive/

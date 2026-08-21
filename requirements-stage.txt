@@ -1,0 +1,2 @@
+# Offline StageLab / development-only dependency.
+pytest-asyncio>=0.23,<2
