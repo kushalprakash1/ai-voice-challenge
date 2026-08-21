@@ -19,7 +19,7 @@ from typing import Awaitable, Callable, Iterable
 
 from .flow_controller import FlowDecision, SchedulingFlowController
 from .flow_state import FlowSnapshot
-from .ingress import FluxIngressController, FluxIngressResult
+from .ingress import FastStabilizationPredicate, FluxIngressController, FluxIngressResult
 from .models import DecisionKind, PolicyDecision
 from .turn_stabilizer import DEFAULT_CONTINUATION_GRACE_MS
 
@@ -94,6 +94,7 @@ class VoiceProbeV3Runtime:
         fallback_resolver: FallbackResolver | None = None,
         on_decision: RuntimeSink | None = None,
         continuation_grace_ms: float = DEFAULT_CONTINUATION_GRACE_MS,
+        fast_stabilization_predicate: FastStabilizationPredicate | None = None,
     ) -> None:
         self._flow = flow_controller or SchedulingFlowController()
         self._fallback_resolver = fallback_resolver
@@ -111,6 +112,7 @@ class VoiceProbeV3Runtime:
         self._ingress = FluxIngressController(
             on_decision=self._handle_ingress_result,
             continuation_grace_ms=continuation_grace_ms,
+            fast_stabilization_predicate=fast_stabilization_predicate,
         )
 
     @property
@@ -146,6 +148,9 @@ class VoiceProbeV3Runtime:
 
     async def mark_response_finished(self) -> FluxIngressResult | None:
         return await self._ingress.mark_response_finished()
+
+    async def mark_response_suppressed(self) -> FluxIngressResult | None:
+        return await self._ingress.mark_response_suppressed()
 
     async def process_turns(
         self,

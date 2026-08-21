@@ -15,6 +15,20 @@ from .fast_policy import RoutineSchedulingPolicy
 from .models import DecisionKind, PolicyDecision
 
 
+_SUBORDINATE_EXAMPLE_PREFIXES = (
+    "for example",
+    "for instance",
+    "such as",
+    "e.g.",
+    "e.g ",
+)
+
+
+def _is_subordinate_example(turn: str) -> bool:
+    normalized = " ".join(turn.casefold().split())
+    return normalized.startswith(_SUBORDINATE_EXAMPLE_PREFIXES)
+
+
 @dataclass(frozen=True, slots=True)
 class CoalescedTurn:
     source_turns: tuple[str, ...]
@@ -61,6 +75,13 @@ class ConversationBurstCoalescer:
 
         if actionable:
             turn, decision = actionable[-1]
+
+            # A separately finalized illustrative tail elaborates the direct
+            # question before it; it does not open a new workflow step. Keep
+            # the earlier question as owner while still evaluating every turn
+            # in order so independent state transitions remain intact.
+            if _is_subordinate_example(turn) and len(actionable) >= 2:
+                turn, decision = actionable[-2]
             discarded = tuple(
                 prior_turn
                 for prior_turn, prior_decision in evaluations

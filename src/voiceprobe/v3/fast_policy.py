@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 
+from .flow_state import extract_concrete_pm_slots
 from .models import DecisionKind, PatientFacts, PolicyDecision
 
 
@@ -23,20 +24,6 @@ def _norm(text: str) -> str:
 def _contains_any(text: str, phrases: tuple[str, ...]) -> bool:
     return any(phrase in text for phrase in phrases)
 
-
-_DIGIT_PM_RE = re.compile(
-    r"\b(?:1[0-2]|0?[1-9])"
-    r"(?::[0-5]\d|\.[0-5]\d)?"
-    r"\s*(?:p\.?m\.?|pm)\b",
-    flags=re.IGNORECASE,
-)
-
-_SPOKEN_PM_RE = re.compile(
-    r"\b(?:one|two|three|four|five)"
-    r"(?:\s+(?:fifteen|thirty|forty[\s-]?five))?"
-    r"\s+(?:p\.?m\.?|pm)\b",
-    flags=re.IGNORECASE,
-)
 
 _OTHER_WEEKDAYS = (
     "monday",
@@ -56,17 +43,15 @@ _EARLIER_WEEKDAYS = (
 
 
 def _extract_offered_pm_slot(text: str) -> str | None:
-    digit = _DIGIT_PM_RE.search(text)
+    slots = extract_concrete_pm_slots(text)
+    return slots[0] if slots else None
 
-    if digit is not None:
-        return digit.group(0)
 
-    spoken = _SPOKEN_PM_RE.search(text)
-
-    if spoken is not None:
-        return spoken.group(0)
-
-    return None
+def _count_offered_pm_slots(text: str) -> int:
+    # A multi-option clinic question is structurally a concrete-slot offer.
+    # Count distinct digit/spoken PM spans so wording such as "Which works?"
+    # does not need its own lexical special case.
+    return len(extract_concrete_pm_slots(text))
 
 
 def _is_obvious_fragment(text: str) -> bool:
@@ -111,6 +96,10 @@ class RoutineSchedulingPolicy:
     def __init__(self, facts: PatientFacts | None = None) -> None:
         self.facts = facts or PatientFacts()
         self._allow_earlier_week_afternoons = False
+        # Workflow memory only: after the patient explicitly chooses to
+        # reschedule an existing appointment, PGAI commonly asks why. The
+        # answer still comes from authoritative PatientFacts, not from this flag.
+        self._awaiting_reschedule_reason = False
 
     @property
     def allow_earlier_week_afternoons(self) -> bool:
@@ -150,6 +139,38 @@ class RoutineSchedulingPolicy:
                 ),
             )
         )
+        friday_unavailable_alternate_day = (
+            "friday afternoon" in text
+            and _contains_any(
+                text,
+                (
+                    "no friday afternoon openings",
+                    "friday afternoon is full",
+                    "friday afternoon is unavailable",
+                    "friday afternoon is not available",
+                    "friday afternoon isn't available",
+                ),
+            )
+            and _contains_any(
+                text,
+                (
+                    "different day",
+                    "another day",
+                    "other day",
+                ),
+            )
+            and _contains_any(
+                text,
+                (
+                    "different time",
+                    "another time",
+                    "other time",
+                    "other options",
+                    "check for other options",
+                ),
+            )
+        )
+
         asks_earlier_week = (
             "afternoon" in text
             and _contains_any(
@@ -173,7 +194,11 @@ class RoutineSchedulingPolicy:
             )
         )
 
-        return offers_day_or_provider or asks_earlier_week
+        return (
+            offers_day_or_provider
+            or friday_unavailable_alternate_day
+            or asks_earlier_week
+        )
 
     def decide(self, agent_turn: str) -> PolicyDecision:
         text = _norm(agent_turn)
@@ -336,6 +361,38 @@ class RoutineSchedulingPolicy:
                 ),
             )
         )
+        friday_unavailable_alternate_day = (
+            "friday afternoon" in text
+            and _contains_any(
+                text,
+                (
+                    "no friday afternoon openings",
+                    "friday afternoon is full",
+                    "friday afternoon is unavailable",
+                    "friday afternoon is not available",
+                    "friday afternoon isn't available",
+                ),
+            )
+            and _contains_any(
+                text,
+                (
+                    "different day",
+                    "another day",
+                    "other day",
+                ),
+            )
+            and _contains_any(
+                text,
+                (
+                    "different time",
+                    "another time",
+                    "other time",
+                    "other options",
+                    "check for other options",
+                ),
+            )
+        )
+
         asks_earlier_week = (
             "afternoon" in text
             and _contains_any(
@@ -358,6 +415,13 @@ class RoutineSchedulingPolicy:
                 ),
             )
         )
+
+        if friday_unavailable_alternate_day:
+            return PolicyDecision(
+                DecisionKind.SEARCH_ALTERNATE_DAY_AFTERNOON,
+                text="Please check another weekday afternoon.",
+                reason="friday_afternoon_unavailable_choose_alternate_day",
+            )
 
         if offers_day_or_provider:
             return PolicyDecision(
@@ -519,6 +583,7 @@ class RoutineSchedulingPolicy:
             )
 
         if asks_reason:
+            self._awaiting_reschedule_reason = False
             return PolicyDecision(
                 DecisionKind.ANSWER_COMPLAINT,
                 text=f"I have {f.complaint}.",
@@ -542,7 +607,10 @@ class RoutineSchedulingPolicy:
         # appointment is NOT confirmation of the transaction being attempted
         # in this call. If PGAI asks whether to keep/reschedule/cancel it,
         # continue naturally into the requested Friday-afternoon reschedule.
-        existing_appointment_prompt = (
+        keep_reschedule_cancel_choice = all(
+            choice in text for choice in ("keep", "reschedule", "cancel")
+        )
+        existing_appointment_prompt = keep_reschedule_cancel_choice or (
             _contains_any(
                 text,
                 (
@@ -573,6 +641,7 @@ class RoutineSchedulingPolicy:
         )
 
         if existing_appointment_prompt:
+            self._awaiting_reschedule_reason = True
             return PolicyDecision(
                 DecisionKind.STATE_OBJECTIVE,
                 text=(
@@ -604,13 +673,21 @@ class RoutineSchedulingPolicy:
                 reason="booking_confirmation",
             )
 
-        if _contains_any(
-            text,
-            (
-                "insurance",
-                "insurance provider",
-                "what coverage",
-            ),
+        if (
+            _contains_any(text, ("insurance", "coverage"))
+            and _contains_any(
+                text,
+                (
+                    "what insurance",
+                    "which insurance",
+                    "who is your insurance",
+                    "who's your insurance",
+                    "insurance provider",
+                    "do you have insurance",
+                    "are you insured",
+                    "what coverage do you have",
+                ),
+            )
         ):
             return PolicyDecision(
                 DecisionKind.ANSWER_FACT,
@@ -764,9 +841,16 @@ class RoutineSchedulingPolicy:
             )
         )
 
+        multi_slot_choice_question = (
+            offered_pm_slot is not None
+            and "?" in raw
+            and _count_offered_pm_slots(raw) >= 2
+        )
+
         actionable_slot_cue = (
             slot_offer_cue
             or selection_confirmation_cue
+            or multi_slot_choice_question
         )
 
         offered_earlier_weekday = _contains_any(text, _EARLIER_WEEKDAYS)
@@ -840,6 +924,39 @@ class RoutineSchedulingPolicy:
             return PolicyDecision(
                 DecisionKind.WAIT,
                 reason="boilerplate",
+            )
+
+        # Reschedule workflow expectation is deliberately checked only after
+        # every normal deterministic handler above has had a chance to answer.
+        # This prevents workflow memory from hijacking insurance, DOB, provider,
+        # availability, or slot questions.
+        if (
+            self._awaiting_reschedule_reason
+            and _contains_any(
+                text,
+                (
+                    "reason",
+                    "why",
+                ),
+            )
+            and _contains_any(
+                text,
+                (
+                    "reschedule",
+                    "rescheduling",
+                    "change your appointment",
+                    "change the appointment",
+                    "move your appointment",
+                    "move the appointment",
+                    "different day",
+                ),
+            )
+        ):
+            self._awaiting_reschedule_reason = False
+            return PolicyDecision(
+                DecisionKind.ANSWER_COMPLAINT,
+                text=f"I have {f.complaint}.",
+                reason="reschedule_reason_requested",
             )
 
         return PolicyDecision(

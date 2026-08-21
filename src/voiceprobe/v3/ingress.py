@@ -49,6 +49,8 @@ class RemoteSpeechBurstBuffer:
         self._coalescer = coalescer or ConversationBurstCoalescer()
         self._response_busy = False
         self._pending: list[str] = []
+        self._active_response_turns: tuple[str, ...] = ()
+        self._last_emitted_turns: tuple[str, ...] = ()
 
     @property
     def response_busy(self) -> bool:
@@ -60,6 +62,7 @@ class RemoteSpeechBurstBuffer:
 
     def mark_response_started(self) -> None:
         self._response_busy = True
+        self._active_response_turns = self._last_emitted_turns
 
     def ingest_end_of_turn(
         self,
@@ -90,6 +93,11 @@ class RemoteSpeechBurstBuffer:
             return None
 
         if self._response_busy:
+            # Flux may repeat the same completed EOT while the response it
+            # authorized is being prepared. It is transport duplication, not
+            # a new conversational turn.
+            if normalized == self._active_response_turns:
+                return None
             self._pending.extend(normalized)
             return None
 
@@ -104,6 +112,7 @@ class RemoteSpeechBurstBuffer:
         """Release the busy state and coalesce anything said meanwhile."""
 
         self._response_busy = False
+        self._active_response_turns = ()
 
         if not self._pending:
             return None
@@ -114,6 +123,26 @@ class RemoteSpeechBurstBuffer:
         return self._build_result(
             turns,
             emission_reason="buffered_burst_drained",
+        )
+
+    def mark_response_suppressed(self) -> FluxIngressResult | None:
+        """Abandon stale output and re-coalesce it with its continuation."""
+
+        self._response_busy = False
+        # With no new continuation, suppression does not create a new source
+        # turn. Re-emitting the active turn here previously allowed one Flux
+        # EOT to authorize an unbounded number of caller responses.
+        pending = tuple(self._pending)
+        turns = self._active_response_turns + pending if pending else ()
+        self._active_response_turns = ()
+        self._pending.clear()
+
+        if not turns:
+            return None
+
+        return self._build_result(
+            turns,
+            emission_reason="suppressed_candidate_recoalesced",
         )
 
     def clear_pending(self) -> tuple[str, ...]:
@@ -129,6 +158,7 @@ class RemoteSpeechBurstBuffer:
         *,
         emission_reason: str,
     ) -> FluxIngressResult:
+        self._last_emitted_turns = turns
         coalesced = self._coalescer.coalesce(turns)
 
         return FluxIngressResult(
@@ -144,6 +174,9 @@ DecisionSink = Callable[
     [FluxIngressResult],
     Awaitable[None] | None,
 ]
+FastStabilizationPredicate = Callable[[str], bool]
+
+INITIAL_PREREQUISITE_HOLD_MS = 250.0
 
 
 async def _call_sink(
@@ -168,9 +201,13 @@ class FluxIngressController:
         burst_buffer: RemoteSpeechBurstBuffer | None = None,
         on_decision: DecisionSink | None = None,
         continuation_grace_ms: float = DEFAULT_CONTINUATION_GRACE_MS,
+        fast_stabilization_predicate: FastStabilizationPredicate | None = None,
+        fast_stabilization_ms: float = INITIAL_PREREQUISITE_HOLD_MS,
     ) -> None:
         if continuation_grace_ms < 0:
             raise ValueError("continuation_grace_ms must be non-negative")
+        if fast_stabilization_ms < 0:
+            raise ValueError("fast_stabilization_ms must be non-negative")
 
         self._burst_buffer = burst_buffer or RemoteSpeechBurstBuffer()
         self._on_decision = on_decision
@@ -179,8 +216,13 @@ class FluxIngressController:
         self._turn_resumed_count = 0
 
         self._continuation_grace_ms = float(continuation_grace_ms)
+        self._fast_stabilization_predicate = fast_stabilization_predicate
+        self._fast_stabilization_ms = float(fast_stabilization_ms)
         self._stabilized_pending: list[str] = []
         self._stabilization_task: asyncio.Task[None] | None = None
+        self._flush_lock = asyncio.Lock()
+        self._background_failures: list[str] = []
+        self._fast_flush_armed = False
 
     @property
     def burst_buffer(self) -> RemoteSpeechBurstBuffer:
@@ -229,6 +271,7 @@ class FluxIngressController:
             del service
             self._last_start_transcript = transcript
             self._cancel_stabilization_timer()
+            self._fast_flush_armed = False
 
         @stt_service.event_handler("on_turn_resumed")
         async def _on_turn_resumed(
@@ -237,6 +280,7 @@ class FluxIngressController:
             del service
             self._turn_resumed_count += 1
             self._cancel_stabilization_timer()
+            self._fast_flush_armed = False
 
         @stt_service.event_handler("on_end_of_turn")
         async def _on_end_of_turn(
@@ -259,25 +303,42 @@ class FluxIngressController:
 
         self._stabilized_pending.append(normalized)
         self._cancel_stabilization_timer()
+        self._fast_flush_armed = False
 
         if self._continuation_grace_ms == 0:
             await self.flush_stabilized_pending()
             return
 
+        delay_ms = self._continuation_grace_ms
+        predicate = self._fast_stabilization_predicate
+        if (
+            len(self._stabilized_pending) == 1
+            and predicate is not None
+            and predicate(normalized)
+        ):
+            delay_ms = min(delay_ms, self._fast_stabilization_ms)
+            self._fast_flush_armed = True
         self._stabilization_task = asyncio.create_task(
-            self._delayed_stabilization_flush()
+            self._delayed_stabilization_flush(delay_ms)
         )
 
-    async def _delayed_stabilization_flush(self) -> None:
+    async def _delayed_stabilization_flush(self, delay_ms: float | None = None) -> None:
         try:
             await asyncio.sleep(
-                self._continuation_grace_ms / 1000.0
+                (self._continuation_grace_ms if delay_ms is None else delay_ms) / 1000.0
             )
         except asyncio.CancelledError:
             return
 
         self._stabilization_task = None
-        await self.flush_stabilized_pending()
+        try:
+            await self.flush_stabilized_pending()
+        except Exception as exc:
+            # This coroutine is owned by create_task(), not by Pipecat. Always
+            # retrieve its exception so a sink failure cannot become an
+            # unobserved task exception. Semantic resolvers provide their own
+            # deterministic fallback before reaching this boundary.
+            self._background_failures.append(f"{type(exc).__name__}: {exc}")
 
     def _cancel_stabilization_timer(self) -> None:
         task = self._stabilization_task
@@ -291,6 +352,12 @@ class FluxIngressController:
     ) -> FluxIngressResult | None:
         """Release the currently stabilized remote conversational burst."""
 
+        async with self._flush_lock:
+            return await self._flush_stabilized_pending_locked()
+
+    async def _flush_stabilized_pending_locked(
+        self,
+    ) -> FluxIngressResult | None:
         current_task = asyncio.current_task()
         task = self._stabilization_task
         self._stabilization_task = None
@@ -308,9 +375,16 @@ class FluxIngressController:
         turns = tuple(self._stabilized_pending)
         self._stabilized_pending.clear()
 
+        emission_reason = (
+            "initial_prerequisite_fast_path"
+            if self._fast_flush_armed
+            else "stabilized_end_of_turn"
+        )
+        self._fast_flush_armed = False
+
         result = self._burst_buffer.ingest_turns(
             turns,
-            emission_reason="stabilized_end_of_turn",
+            emission_reason=emission_reason,
         )
 
         await _call_sink(
@@ -336,8 +410,17 @@ class FluxIngressController:
 
         return result
 
+    async def mark_response_suppressed(self) -> FluxIngressResult | None:
+        """Re-emit a stale candidate together with buffered continuation."""
+
+        result = self._burst_buffer.mark_response_suppressed()
+
+        await _call_sink(self._on_decision, result)
+        return result
+
     def clear_pending(self) -> tuple[str, ...]:
         self._cancel_stabilization_timer()
+        self._fast_flush_armed = False
 
         stabilized = tuple(self._stabilized_pending)
         self._stabilized_pending.clear()

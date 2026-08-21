@@ -1,4 +1,4 @@
-"""Structured prior observations about the voice agent under assessment.
+"""Structured prior observations about the target voice agent.
 
 This is target-agent knowledge, never caller-persona truth.
 

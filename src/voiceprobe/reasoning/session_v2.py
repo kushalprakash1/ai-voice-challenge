@@ -62,6 +62,10 @@ from voiceprobe.reasoning.planner import (
 from voiceprobe.reasoning.semantic_reasoner import (
     StructuredTurnReasoner,
 )
+from voiceprobe.reasoning.semanticlab_turn_bridge import (
+    build_reasoning_v2_semantic_interpreter,
+    reasoning_v2_edge_model_from_environment,
+)
 from voiceprobe.reasoning.turn_frame import (
     SlotOption,
     TurnFrame,
@@ -616,7 +620,7 @@ def _compatibility_decision(
             f"compatibility mapping: {action!r}."
         )
 
-    # Critical production boundary:
+    # Keep semantic perception separate from patient-owned state.
     #
     # autonomous_phone interprets END_CONVERSATION as permission to send
     # an AudioSocket terminate packet. Never expose that side effect until
@@ -695,7 +699,7 @@ class ReasoningV2PatientSession:
         self._semantic = (
             semantic
             if semantic is not None
-            else StructuredTurnReasoner(
+            else build_reasoning_v2_semantic_interpreter(
                 model=model,
                 url=url,
                 client=client,
@@ -706,7 +710,7 @@ class ReasoningV2PatientSession:
             planner
             if planner is not None
             else QwenPatientPlanner(
-                model=model,
+                model=reasoning_v2_edge_model_from_environment(model),
                 url=url,
                 client=client,
             )

@@ -69,7 +69,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9019
 
 DEFAULT_MODEL = "qwen3:14b"
-DEFAULT_OLLAMA_URL = "http://10.0.0.219:11434/api/chat"
+DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
 
 DEFAULT_VOICE = "af_heart"
 

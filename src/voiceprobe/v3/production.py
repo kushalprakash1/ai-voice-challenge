@@ -27,6 +27,30 @@ from .runtime import (
     VoiceProbeV3Runtime,
 )
 from .semantic_router import V31SemanticRouter
+from .qwen_v3_fallback import (
+    QwenV3FallbackRouter,
+    qwen_v3_fallback_enabled_from_environment,
+)
+from .medication_refill import (
+    MEDICATION,
+    PHARMACY_PREFERENCE,
+    SCENARIO_ID as MEDICATION_REFILL_SCENARIO_ID,
+    MedicationRefillCorrectionScenario,
+)
+from .self_pay_location import (
+    SCENARIO_ID as SELF_PAY_LOCATION_SCENARIO_ID,
+    SelfPayLocationSwitchScenario,
+)
+from .doctor_specialist import (
+    SCENARIO_ID as DOCTOR_SPECIALIST_SCENARIO_ID,
+    DoctorDirectoryQwenRouter,
+    DoctorSpecialistDirectoryScenario,
+)
+from .farthest_date import SCENARIO_ID as FARTHEST_DATE_SCENARIO_ID, FarthestDatePolicy
+from .prerequisite import (
+    PrerequisiteOverlay,
+    is_high_confidence_initial_profile_prerequisite,
+)
 from voiceprobe.v32.runtime_fallback import (
     V32SemanticFallbackResolver,
 )
@@ -48,10 +72,9 @@ class ProductionFluxConfig:
     eot_threshold: float = 0.85
     eot_timeout_ms: int = 5000
     eager_eot_threshold: float | None = None
-    # Live run 4: the remote synthetic agent occasionally continued
-    # speaking after Flux's earlier boundary. Keep the generic runtime
-    # default unchanged, but give live production more continuation time.
-    continuation_grace_ms: float = 900.0
+    # The remote agent can continue after an early Flux boundary. Production
+    # allows more continuation time without changing the generic runtime.
+    continuation_grace_ms: float = 3000.0
     keyterms: tuple[str, ...] = DEFAULT_KEYTERMS
     flux_encoding: str = "linear16"
 
@@ -230,6 +253,32 @@ class PipecatRuntimeBridge:
         flow_controller: SchedulingFlowController | None = None,
     ) -> None:
         config.validate()
+        selected_scenario = os.environ.get("VOICEPROBE_SCENARIO", "").strip()
+        adversarial_semantic_scenario = selected_scenario in {
+            MEDICATION_REFILL_SCENARIO_ID,
+            SELF_PAY_LOCATION_SCENARIO_ID,
+            "self-pay-location-switch",
+            DOCTOR_SPECIALIST_SCENARIO_ID,
+            FARTHEST_DATE_SCENARIO_ID,
+        }
+        farthest_date_policy = (
+            FarthestDatePolicy()
+            if selected_scenario == FARTHEST_DATE_SCENARIO_ID
+            else None
+        )
+        effective_flow = flow_controller or SchedulingFlowController(
+            semantic_only=(
+                adversarial_semantic_scenario
+                and farthest_date_policy is None
+            ),
+            decision_overlay=farthest_date_policy,
+        )
+        self._selected_scenario = selected_scenario
+        self._medication_scenario: MedicationRefillCorrectionScenario | None = None
+        self._self_pay_location_scenario: SelfPayLocationSwitchScenario | None = None
+        self._doctor_specialist_scenario: DoctorSpecialistDirectoryScenario | None = None
+        self._farthest_date_scenario: FarthestDatePolicy | None = farthest_date_policy
+        self._prerequisite_overlay: PrerequisiteOverlay | None = None
 
         if fallback_resolver is None:
             raise ValueError(
@@ -238,7 +287,63 @@ class PipecatRuntimeBridge:
             )
 
         if fallback_resolver is _DEFAULT_V31_FALLBACK:
-            if _v32_semantic_enabled():
+            if selected_scenario == FARTHEST_DATE_SCENARIO_ID:
+                router = semantic_router or V31SemanticRouter(use_embeddings=True)
+                resolved_fallback = router.resolve
+                self._semantic_router = router
+                self._v32_semantic_resolver = None
+                self._qwen_v3_fallback_router = None
+                self._semantic_mode = "stable_scheduler+farthest_date_policy"
+            elif adversarial_semantic_scenario:
+                if semantic_router is not None:
+                    raise ValueError(
+                        "semantic_router cannot be supplied for the medication "
+                        "refill scenario."
+                    )
+                qwen_router = (DoctorDirectoryQwenRouter() if selected_scenario == DOCTOR_SPECIALIST_SCENARIO_ID else QwenV3FallbackRouter())
+                if selected_scenario == DOCTOR_SPECIALIST_SCENARIO_ID:
+                    active_scenario = DoctorSpecialistDirectoryScenario(tracker=effective_flow.tracker, qwen=qwen_router)
+                    self._doctor_specialist_scenario = active_scenario
+                    self._semantic_mode = "doctor_specialist_qwen_v3"
+                else:
+                    qwen_router.semantic_domain = (
+                        "medication" if selected_scenario == MEDICATION_REFILL_SCENARIO_ID else "self_pay_location"
+                    )
+                if selected_scenario == MEDICATION_REFILL_SCENARIO_ID:
+                    active_scenario = MedicationRefillCorrectionScenario(
+                        tracker=effective_flow.tracker,
+                        qwen=qwen_router,
+                    )
+                    self._medication_scenario = active_scenario
+                    self._semantic_mode = "medication_refill_qwen_v3"
+                elif selected_scenario not in {DOCTOR_SPECIALIST_SCENARIO_ID, FARTHEST_DATE_SCENARIO_ID}:
+                    active_scenario = SelfPayLocationSwitchScenario(
+                        tracker=effective_flow.tracker,
+                        qwen=qwen_router,
+                        scenario_id=selected_scenario,
+                    )
+                    self._self_pay_location_scenario = active_scenario
+                    self._semantic_mode = "self_pay_location_qwen_v3"
+                prerequisite_overlay = PrerequisiteOverlay(
+                    scenario_id=selected_scenario,
+                    tracker=effective_flow.tracker,
+                    domain_resolver=active_scenario.resolve,
+                    facts=(__import__("voiceprobe.v3.models", fromlist=["PatientFacts"]).PatientFacts(first_name="Gyeong-hyeon", last_name="Gwak") if selected_scenario == DOCTOR_SPECIALIST_SCENARIO_ID else None),
+                    compound_fact_provider=(
+                        lambda field: {
+                            "medication": MEDICATION,
+                            "pharmacy_preference": PHARMACY_PREFERENCE,
+                        }.get(field)
+                        if selected_scenario == MEDICATION_REFILL_SCENARIO_ID
+                        else None
+                    ),
+                )
+                self._prerequisite_overlay = prerequisite_overlay
+                resolved_fallback = prerequisite_overlay.resolve
+                self._semantic_router = None
+                self._v32_semantic_resolver = None
+                self._qwen_v3_fallback_router = qwen_router
+            elif _v32_semantic_enabled():
                 if semantic_router is not None:
                     raise ValueError(
                         "semantic_router cannot be supplied when "
@@ -256,6 +361,17 @@ class PipecatRuntimeBridge:
                 self._semantic_router = None
                 self._v32_semantic_resolver = v32_resolver
                 self._semantic_mode = "v32"
+            elif (
+                semantic_router is None
+                and qwen_v3_fallback_enabled_from_environment()
+            ):
+                qwen_router = QwenV3FallbackRouter()
+                resolved_fallback = qwen_router.resolve
+
+                self._semantic_router = None
+                self._v32_semantic_resolver = None
+                self._qwen_v3_fallback_router = qwen_router
+                self._semantic_mode = "qwen_v3"
             else:
                 router = (
                     semantic_router
@@ -271,6 +387,7 @@ class PipecatRuntimeBridge:
                 ) = router
 
                 self._v32_semantic_resolver = None
+                self._qwen_v3_fallback_router = None
                 self._semantic_mode = "v31"
         else:
             if semantic_router is not None:
@@ -284,16 +401,34 @@ class PipecatRuntimeBridge:
             self._v32_semantic_resolver = None
             self._semantic_mode = "custom"
 
+        if not hasattr(self, "_qwen_v3_fallback_router"):
+            self._qwen_v3_fallback_router = None
+
         self._config = config
         self._frame_sink: Any | None = None
         self._queued_speech_count = 0
+        self._pending_spoken_decision: PolicyDecision | None = None
         self._tts_frame_factory = tts_frame_factory or _default_tts_frame_factory
 
         self._runtime = VoiceProbeV3Runtime(
-            flow_controller=flow_controller,
+            flow_controller=effective_flow,
             fallback_resolver=resolved_fallback,
             on_decision=self._on_runtime_decision,
             continuation_grace_ms=config.continuation_grace_ms,
+            fast_stabilization_predicate=(
+                self._initial_prerequisite_fast_path
+                if self._prerequisite_overlay is not None
+                else None
+            ),
+        )
+
+    def _initial_prerequisite_fast_path(self, text: str) -> bool:
+        overlay = self._prerequisite_overlay
+        return bool(
+            overlay is not None
+            and not overlay.state.profile_consent_spoken
+            and not overlay.state.identity_fields_spoken
+            and is_high_confidence_initial_profile_prerequisite(text)
         )
 
     @property
@@ -301,6 +436,44 @@ class PipecatRuntimeBridge:
         """Active production fallback architecture."""
 
         return self._semantic_mode
+
+    @property
+    def scenario_metadata(self) -> dict[str, object]:
+        """Existing bridge metadata for artifacts and decision-event evidence."""
+
+        scenario = self._medication_scenario or self._self_pay_location_scenario or self._doctor_specialist_scenario or self._farthest_date_scenario
+        if scenario is None:
+            return {"scenario": self._selected_scenario or None}
+        metadata = scenario.metadata()
+        if self._prerequisite_overlay is not None:
+            metadata.update(self._prerequisite_overlay.metadata())
+        if self._medication_scenario is not None:
+            metadata["medication_stage"] = scenario.last_semantic_action
+            metadata["oracle_candidate"] = (
+                self._medication_scenario.oracle.correction_retention_failure
+                or self._medication_scenario.oracle.medication_state_persistence_failure
+            )
+        return metadata
+
+    @property
+    def objective_complete(self) -> bool:
+        scenario = self._medication_scenario or self._self_pay_location_scenario or self._doctor_specialist_scenario or self._farthest_date_scenario
+        if scenario is not None:
+            return scenario.objective_complete
+        return self._runtime.flow_controller.tracker.snapshot().complete
+
+    @property
+    def scenario_terminal(self) -> bool:
+        """Whether a scenario has a grounded terminal result, successful or not."""
+        if self._medication_scenario is not None:
+            return self._medication_scenario.scenario_terminal
+        if self._self_pay_location_scenario is not None:
+            return self._self_pay_location_scenario.objective_complete
+        if self._doctor_specialist_scenario is not None:
+            return self._doctor_specialist_scenario.objective_complete
+        if self._farthest_date_scenario is not None:
+            return self._farthest_date_scenario.objective_complete
+        return self.objective_complete
 
     @property
     def v32_semantic_resolver(
@@ -366,11 +539,25 @@ class PipecatRuntimeBridge:
             await maybe
 
         self._queued_speech_count += 1
+        self._pending_spoken_decision = result.decision
 
     async def on_tts_stopped(self) -> None:
         """Release response-busy state only after Pipecat reports TTS stopped."""
-
+        scenario = self._medication_scenario or self._self_pay_location_scenario or self._doctor_specialist_scenario or self._farthest_date_scenario
+        if scenario is not None and self._pending_spoken_decision is not None:
+            scenario.mark_decision_spoken(self._pending_spoken_decision)
+        if self._prerequisite_overlay is not None and self._pending_spoken_decision is not None:
+            self._prerequisite_overlay.mark_decision_spoken(self._pending_spoken_decision)
+        self._pending_spoken_decision = None
         await self._runtime.mark_response_finished()
+
+    async def on_tts_suppressed(self) -> None:
+        """Re-coalesce an unsent candidate with the remote continuation."""
+        scenario = self._medication_scenario or self._self_pay_location_scenario or self._doctor_specialist_scenario or self._farthest_date_scenario
+        if scenario is not None and self._pending_spoken_decision is not None:
+            scenario.mark_decision_suppressed(self._pending_spoken_decision)
+        self._pending_spoken_decision = None
+        await self._runtime.mark_response_suppressed()
 
     def clear_pending(self) -> tuple[str, ...]:
         return self._runtime.ingress.clear_pending()

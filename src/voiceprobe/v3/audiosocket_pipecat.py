@@ -124,6 +124,7 @@ def build_audiosocket_flux_input_worker(
     config: ProductionFluxConfig = DEFAULT_PRODUCTION_FLUX_CONFIG,
     enable_metrics: bool = True,
     enable_usage_metrics: bool = True,
+    on_startframe: Callable[[], None] | None = None,
 ) -> AudioSocketPipecatBundle:
     """Build the Pipecat worker used only for AudioSocket -> Flux input."""
 
@@ -132,12 +133,27 @@ def build_audiosocket_flux_input_worker(
     if not hasattr(speech_sink, "queue_frames"):
         raise TypeError("speech_sink must provide queue_frames(frames)")
 
+    from pipecat.frames.frames import StartFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-    pipeline = Pipeline([stt_service])
+    class VoiceProbeStartFrameProcessor(FrameProcessor):
+        async def process_frame(self, frame: Any, direction: FrameDirection) -> None:
+            await super().process_frame(frame, direction)
+            if isinstance(frame, StartFrame) and on_startframe is not None:
+                on_startframe()
+            await self.push_frame(frame, direction)
+
+    # Establish VoiceProbe's pipeline lifecycle before Flux receives StartFrame
+    # and begins connecting/emitting metrics.
+    pipeline = Pipeline([VoiceProbeStartFrameProcessor(), stt_service])
     worker = PipelineWorker(
         pipeline,
+        # This is a server-side AudioSocket pipeline, not an RTVI client.
+        # Excluding the unused default processor prevents runner metrics from
+        # reaching RTVI before its lifecycle StartFrame.
+        enable_rtvi=False,
         params=PipelineParams(
             audio_in_sample_rate=config.sample_rate,
             audio_out_sample_rate=config.sample_rate,

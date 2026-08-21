@@ -1,10 +1,10 @@
-"""Production Asterisk execution adapter for authorized assessment calls.
+"""Production Asterisk execution adapter for authorized calls.
 
 The generic suite runner owns authorization, sequencing, persistence, and
 budget state. This module owns exactly one telephony attempt after the runner
 has authorized it.
 
-No destination normalization occurs here. The strict assessment-number safety
+No destination normalization occurs here. The strict destination-number safety
 boundary is revalidated immediately before any AMI or socket side effect.
 """
 
@@ -119,7 +119,7 @@ def _termination_failure_reason(
     offered_day: str | None,
     offered_time: str | None,
 ) -> str | None:
-    """Build durable evidence explaining an incomplete assessment."""
+    """Build durable evidence explaining an incomplete call objective."""
     if status is AsteriskTerminationStatus.NORMAL_COMPLETION:
         return None
 
@@ -305,7 +305,7 @@ def _default_ami_client_factory(
 
 
 class AsteriskAssessmentCallAdapter:
-    """Execute one already-authorized assessment call through Asterisk.
+    """Execute one already-authorized call through Asterisk.
 
     The adapter deliberately has no retry loop. One execute_call invocation
     maps to at most one AMI Originate operation.
@@ -804,7 +804,7 @@ class AsteriskAssessmentCallAdapter:
 
         if self._tts_pcm_cache is None:
             # Pre-render time-critical deterministic responses before the
-            # listener can possibly originate a real assessment call.
+            # listener can possibly originate a real call.
             self._tts_pcm_cache = build_pre_rendered_tts_cache(
                 pipeline=self._pipeline,
                 voice=self._voice,

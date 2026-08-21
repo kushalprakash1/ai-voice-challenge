@@ -15,6 +15,7 @@ already listening.
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import threading
 import time
@@ -44,7 +45,22 @@ from .audiosocket_kokoro import (
     AudioSocketV3MediaBoundary,
     KokoroTelephonyRenderer,
 )
+from .background import (
+    BACKGROUND_SEED,
+    background_mode_from_environment,
+    background_snr_from_environment,
+    validate_background_asset,
+)
 from .audiosocket_pipecat import build_audiosocket_flux_input_worker
+from .accent import (
+    ACCENT_MELO_INDIA,
+    ACCENT_CHATTERBOX_KOREAN_HEAVY,
+    DEFAULT_CACHE_ROOT,
+    AccentCache,
+    accent_cache_preflight,
+    warm_melo_india_renderer,
+    accent_mode_from_environment,
+)
 from .flow_controller import SchedulingFlowController
 from .personas import (
     PersonaDecisionOverlay,
@@ -60,6 +76,53 @@ SOCKET_POLL_SECONDS = 0.10
 RUNNER_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 
 
+class _FluxReadinessGate:
+    """One-shot, level-triggered pre-dial readiness for the live pipeline."""
+
+    def __init__(self) -> None:
+        self.ready = threading.Event()
+        self.pipeline_started = threading.Event()
+        self.flux_connected = threading.Event()
+        self._lock = threading.Lock()
+        self._ready_observations = 0
+
+    @property
+    def ready_observations(self) -> int:
+        with self._lock:
+            return self._ready_observations
+
+    def mark_pipeline_started(self) -> bool:
+        self.pipeline_started.set()
+        return self._refresh()
+
+    def mark_flux_connected(self) -> bool:
+        self.flux_connected.set()
+        return self._refresh()
+
+    def _refresh(self) -> bool:
+        with self._lock:
+            if (
+                self.pipeline_started.is_set()
+                and self.flux_connected.is_set()
+                and not self.ready.is_set()
+            ):
+                self._ready_observations += 1
+                self.ready.set()
+                return True
+        return False
+
+
+async def _observe_flux_connected_state(service: Any, gate: _FluxReadinessGate) -> bool:
+    """Observe Flux's server-confirmed state without an edge-triggered race."""
+
+    established = getattr(service, "_connection_established_event", None)
+    wait = getattr(established, "wait", None)
+    if callable(wait):
+        await wait()
+        return gate.mark_flux_connected()
+    return False
+
+
 @dataclass(frozen=True, slots=True)
 class V3LegacyProgressProjection:
     """Conservative projection from v3 flow evidence into adapter fields."""
@@ -71,6 +134,8 @@ class V3LegacyProgressProjection:
     offered_time: str | None
     accepted_slot_text: str | None
     booking_confirmation_text: str | None
+    scenario_id: str = "autonomous-phone-diagnostic"
+    scenario_metadata: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,23 +154,83 @@ class V3AsteriskMediaResult:
     failure_reason: str | None
 
 
-def project_v3_flow_snapshot(snapshot: FlowSnapshot) -> V3LegacyProgressProjection:
+def project_v3_flow_snapshot(
+    snapshot: FlowSnapshot,
+    *,
+    scenario_id: str = "autonomous-phone-diagnostic",
+    scenario_metadata: Mapping[str, object] | None = None,
+) -> V3LegacyProgressProjection:
     """Map only evidence that v3 actually owns; never invent day/time fields."""
 
-    objective_complete = bool(snapshot.complete)
+    adversarial = scenario_id in {
+        "medication-refill-correction",
+        "office-hours-location-insurance",
+        "self-pay-location-switch",
+        "doctor-specialist-directory",
+    }
+    objective_complete = (
+        bool((scenario_metadata or {}).get("objective_complete"))
+        if adversarial
+        else bool(snapshot.complete)
+    )
 
     return V3LegacyProgressProjection(
         objective_complete=objective_complete,
         # v3 completion itself means explicit remote booking confirmation.
-        booking_confirmed=objective_complete,
+        booking_confirmed=(objective_complete if not adversarial else False),
         # The tracker records this only after an accepted/concretely confirmed slot.
-        offer_accepted=snapshot.accepted_slot_text is not None,
+        offer_accepted=(snapshot.accepted_slot_text is not None if not adversarial else False),
         # v3 intentionally carries the exact accepted/confirmation text instead
         # of pretending it has the legacy split day/time representation.
         offered_day=None,
         offered_time=None,
         accepted_slot_text=snapshot.accepted_slot_text,
         booking_confirmation_text=snapshot.booking_confirmation_text,
+        scenario_id=scenario_id,
+        scenario_metadata=scenario_metadata,
+    )
+
+
+def scenario_termination_failure_reason(
+    *, status: Any, projection: V3LegacyProgressProjection
+) -> str | None:
+    """Describe incomplete objectives using facts owned by that scenario."""
+    if getattr(status, "value", status) == "normal_completion":
+        return None
+    if projection.scenario_id not in {
+        "medication-refill-correction", "office-hours-location-insurance",
+        "self-pay-location-switch",
+        "doctor-specialist-directory",
+    }:
+        return None
+    label = getattr(status, "value", str(status))
+    metadata = dict(projection.scenario_metadata or {})
+    if metadata.get("experiment_status") == "target_capability_blocked":
+        return (
+            "target_capability_blocked: the intended experiment could not be "
+            "exercised after grounded productive recovery paths were exhausted; "
+            f"blocking_target_statement={metadata.get('blocking_target_statement')!r}; "
+            f"human_escalation_offered={metadata.get('human_escalation_offered')!r}; "
+            f"human_escalation_requested={metadata.get('human_escalation_requested')!r}"
+        )
+    keys = (
+        (
+            "scenario_stage", "prerequisite_action", "medication_provided",
+            "target_old_dose_observed", "dose_correction_spoken",
+            "dose_acknowledged", "pharmacy_handled", "objective_complete",
+        )
+        if projection.scenario_id == "medication-refill-correction"
+        else (
+            "insurance_exercised", "self_pay_established", "locations_discovered",
+            "location_a", "location_b", "location_switch_exercised",
+            "hours_queries_completed", "contextual_hours_completed",
+            "oracle_candidates", "objective_complete",
+        )
+    )
+    detail = "; ".join(f"{key}={metadata.get(key)!r}" for key in keys)
+    return (
+        f"{label}: call ended before the {projection.scenario_id} objective "
+        f"completed; scenario={projection.scenario_id}; {detail}"
     )
 
 
@@ -134,6 +259,8 @@ class _RecordingPipecatRuntimeBridge(PipecatRuntimeBridge):
         self._persona_runtime = persona_runtime
         self._persona_event_cursor = 0
         self._persona_final_recorded = False
+        self._last_response_fingerprint: tuple[str, str] | None = None
+        self._repeated_response_count = 0
 
         flow_controller = None
 
@@ -208,6 +335,20 @@ class _RecordingPipecatRuntimeBridge(PipecatRuntimeBridge):
                 ingress_reason=result.ingress_reason,
             )
 
+        scenario_metadata = self.scenario_metadata
+        route_owner = (
+            "prerequisite"
+            if result.decision.reason.startswith("prerequisite:")
+            else (
+                "medication"
+                if result.decision.reason.startswith("medication_refill:")
+                else (
+                    "self_pay"
+                    if result.decision.reason.startswith("self_pay_location:")
+                    else result.route.value
+                )
+            )
+        )
         self._recorder.record_event(
             "v3_runtime_decision",
             decision_index=decision_index,
@@ -226,7 +367,29 @@ class _RecordingPipecatRuntimeBridge(PipecatRuntimeBridge):
             objective_complete=result.after.complete,
             accepted_slot_text=result.after.accepted_slot_text,
             booking_confirmation_text=result.after.booking_confirmation_text,
+            route_owner=route_owner,
+            scenario_state=scenario_metadata,
         )
+
+        if result.response_ready:
+            fingerprint = (result.decision.reason, result.decision.text)
+            if fingerprint == self._last_response_fingerprint:
+                self._repeated_response_count += 1
+            else:
+                self._last_response_fingerprint = fingerprint
+                self._repeated_response_count = 1
+            if self._repeated_response_count >= 3:
+                self._recorder.record_event(
+                    "v3_suspicious_response_repetition",
+                    repeated_count=self._repeated_response_count,
+                    decision_reason=result.decision.reason,
+                    decision_text=result.decision.text,
+                    source_turns=list(result.source_turns),
+                    scenario=self._selected_scenario or None,
+                    assessment_result=(
+                        "FAIL" if self._selected_scenario == "doctor-specialist-directory" else "observe"
+                    ),
+                )
 
         try:
             await super()._on_runtime_decision(result)
@@ -288,9 +451,12 @@ class _AsyncV3Runtime:
         self._recorder = recorder
         self._persona_runtime = persona_runtime
 
-        self.connected = threading.Event()
+        self._readiness = _FluxReadinessGate()
+        self.connected = self._readiness.ready
+        self.pipeline_started = self._readiness.pipeline_started
         self.disconnected = threading.Event()
         self.objective_complete = threading.Event()
+        self.scenario_terminal = threading.Event()
         self.error_event = threading.Event()
         self.stopped = threading.Event()
         self._stop_requested = threading.Event()
@@ -302,6 +468,7 @@ class _AsyncV3Runtime:
         self._bundle: Any | None = None
         self._bridge: PipecatRuntimeBridge | None = None
         self._latest_snapshot: FlowSnapshot | None = None
+        self._latest_scenario_metadata: dict[str, object] = {}
         self._error: BaseException | None = None
 
     @property
@@ -384,6 +551,10 @@ class _AsyncV3Runtime:
 
         return snapshot
 
+    def scenario_metadata(self) -> dict[str, object]:
+        with self._lock:
+            return dict(self._latest_scenario_metadata)
+
     def flush_and_snapshot(self, *, timeout: float = 5.0) -> FlowSnapshot:
         with self._lock:
             loop = self._loop
@@ -396,6 +567,8 @@ class _AsyncV3Runtime:
             await bridge.runtime.ingress.flush_stabilized_pending()
             snapshot = bridge.runtime.flow_controller.tracker.snapshot()
             self._store_snapshot(snapshot)
+            with self._lock:
+                self._latest_scenario_metadata = dict(bridge.scenario_metadata)
             return snapshot
 
         future = asyncio.run_coroutine_threadsafe(flush(), loop)
@@ -472,8 +645,8 @@ class _AsyncV3Runtime:
         @flux.service.event_handler("on_connected")
         async def on_connected(service) -> None:
             del service
-            self.connected.set()
-            self._recorder.record_event("v3_flux_connected")
+            if self._readiness.mark_flux_connected():
+                self._recorder.record_event("v3_flux_connected")
 
         @flux.service.event_handler("on_disconnected")
         async def on_disconnected(service) -> None:
@@ -485,11 +658,29 @@ class _AsyncV3Runtime:
             recorder=self._recorder,
             persona_runtime=self._persona_runtime,
         )
+        def on_startframe() -> None:
+            self._recorder.record_event("v3_pipeline_startframe_established")
+            if self._readiness.mark_pipeline_started():
+                self._recorder.record_event("v3_flux_connected")
+
         bundle = build_audiosocket_flux_input_worker(
             stt_service=flux.service,
             bridge=bridge,
             speech_sink=self._speech_task,
             loop=loop,
+            on_startframe=on_startframe,
+        )
+
+        # Install the level-triggered observer before WorkerRunner can start the
+        # service. Pipecat sets this Event immediately after the server-ready log
+        # and before scheduling on_connected handlers.
+        async def observe_flux_state() -> None:
+            if await _observe_flux_connected_state(flux.service, self._readiness):
+                self._recorder.record_event("v3_flux_connected")
+
+        flux_state_task = asyncio.create_task(
+            observe_flux_state(),
+            name="voiceprobe-v3-flux-readiness-state",
         )
         self._speech_task.set_on_playback_finished(bridge.on_tts_stopped)
         self._store_snapshot(bridge.runtime.flow_controller.tracker.snapshot())
@@ -527,9 +718,15 @@ class _AsyncV3Runtime:
             stop_async.set()
             stop_task.cancel()
             monitor_task.cancel()
+            flux_state_task.cancel()
 
             try:
                 await monitor_task
+            except asyncio.CancelledError:
+                pass
+
+            try:
+                await flux_state_task
             except asyncio.CancelledError:
                 pass
 
@@ -562,9 +759,13 @@ class _AsyncV3Runtime:
             if bridge is not None:
                 snapshot = bridge.runtime.flow_controller.tracker.snapshot()
                 self._store_snapshot(snapshot)
+                with self._lock:
+                    self._latest_scenario_metadata = dict(bridge.scenario_metadata)
 
-                if snapshot.complete:
+                if bridge.objective_complete:
                     self.objective_complete.set()
+                if bridge.scenario_terminal:
+                    self.scenario_terminal.set()
 
             speech_error = self._speech_task.last_error
 
@@ -730,6 +931,34 @@ def execute_v3_asterisk_media(
 
     scenario = get_scenario(request.scenario_id)
 
+    accent_mode = accent_mode_from_environment()
+    background_mode = background_mode_from_environment()
+    background_snr_db = background_snr_from_environment()
+    background_asset = validate_background_asset()
+    if background_mode != "none" and not background_asset["valid"]:
+        raise CallExecutionError("Background asset validation failed before telephony")
+    accent_cache: AccentCache | None = None
+    if accent_mode in {ACCENT_MELO_INDIA, ACCENT_CHATTERBOX_KOREAN_HEAVY}:
+        accent_cache = AccentCache(
+            os.environ.get("VOICEPROBE_ACCENT_CACHE_ROOT", str(DEFAULT_CACHE_ROOT)),
+            mode=accent_mode,
+            scenario=request.scenario_id,
+        )
+        preflight = accent_cache_preflight(
+            scenario=request.scenario_id,
+            mode=accent_mode,
+            cache=accent_cache,
+        )
+        if preflight["missing"]:
+            raise CallExecutionError(
+                "Strict accent cache preflight failed before telephony: "
+                f"scenario={request.scenario_id}; missing={len(preflight['missing'])}"
+            )
+        if accent_mode == ACCENT_MELO_INDIA:
+            # Spawn the one EN_INDIA miss renderer without gating cache-hit
+            # call startup on model loading. A miss waits for this same worker.
+            warm_melo_india_renderer()
+
     # Validate persona configuration before opening the live-call boundary.
     # Empty configuration preserves normal VoiceProbe behavior.
     persona_runtime = persona_runtime_from_environment()
@@ -763,6 +992,13 @@ def execute_v3_asterisk_media(
                 asterisk_unique_id=originate_result.asterisk_unique_id,
                 address=address,
                 reasoning_mode="v3_live",
+                accent_mode=accent_mode,
+                tts_backend=(("melo_accent_cache" if accent_mode == ACCENT_MELO_INDIA else "chatterbox_multilingual_cache") if accent_cache else "kokoro"),
+                accent_speaker=(("EN_INDIA" if accent_mode == ACCENT_MELO_INDIA else "synthetic_local_korean_reference_v1") if accent_cache else None),
+                background_mode=background_mode,
+                background_snr_db=background_snr_db if background_mode != "none" else None,
+                background_seed=BACKGROUND_SEED if background_mode != "none" else None,
+                max_duration_seconds=request.max_duration_seconds,
             )
 
             call_finished = threading.Event()
@@ -809,6 +1045,7 @@ def execute_v3_asterisk_media(
                                 live_runtime is not None
                                 and (
                                     live_runtime.objective_complete.is_set()
+                                    or live_runtime.scenario_terminal.is_set()
                                     or live_runtime.error_event.is_set()
                                 )
                             )
@@ -828,17 +1065,28 @@ def execute_v3_asterisk_media(
 
                         if (
                             live_runtime is not None
-                            and live_runtime.objective_complete.is_set()
+                            and (
+                                live_runtime.objective_complete.is_set()
+                                or live_runtime.scenario_terminal.is_set()
+                            )
                         ):
                             snapshot = live_runtime.flush_and_snapshot()
 
-                            if not snapshot.complete:
+                            if not (
+                                live_runtime.objective_complete.is_set()
+                                or live_runtime.scenario_terminal.is_set()
+                            ):
                                 live_runtime.objective_complete.clear()
+                                live_runtime.scenario_terminal.clear()
                                 continue
 
                             live_runtime.wait_for_speech_idle()
                             recorder.record_event(
-                                "v3_objective_complete",
+                                (
+                                    "v3_objective_complete"
+                                    if live_runtime.objective_complete.is_set()
+                                    else "v3_scenario_terminal"
+                                ),
                                 accepted_slot_text=snapshot.accepted_slot_text,
                                 booking_confirmation_text=(
                                     snapshot.booking_confirmation_text
@@ -910,6 +1158,7 @@ def execute_v3_asterisk_media(
                                 pipeline=pipeline,
                                 config=AudioSocketKokoroConfig(voice=voice),
                                 pcm_cache=tts_pcm_cache,
+                                accent_cache=accent_cache,
                             )
                             speech_task = AudioSocketKokoroSpeechTask(
                                 connection=connection,
@@ -919,12 +1168,15 @@ def execute_v3_asterisk_media(
                                 config=AudioSocketKokoroConfig(voice=voice),
                                 audio_observer=live_monitor.observe_outbound,
                             )
+                            def observe_inbound(pcm: bytes) -> None:
+                                live_monitor.observe_inbound(pcm)
+
                             boundary = AudioSocketV3MediaBoundary(
                                 connection=connection,
                                 speech_task=speech_task,
                                 send_lock=send_lock,
                                 recorder=recorder,
-                                audio_observer=live_monitor.observe_inbound,
+                                audio_observer=observe_inbound,
                             )
 
                             # Contract: UUID -> idle media -> WorkerRunner/Flux.
@@ -1014,7 +1266,12 @@ def execute_v3_asterisk_media(
                 )
 
             final_snapshot = live_runtime.snapshot()
-            projection = project_v3_flow_snapshot(final_snapshot)
+            scenario_metadata = live_runtime.scenario_metadata()
+            projection = project_v3_flow_snapshot(
+                final_snapshot,
+                scenario_id=request.scenario_id,
+                scenario_metadata=scenario_metadata,
+            )
             hangup_result = _record_hangup_observation(
                 recorder=recorder,
                 originate_result=originate_result,
@@ -1033,6 +1290,11 @@ def execute_v3_asterisk_media(
                 offered_day=projection.offered_day,
                 offered_time=projection.offered_time,
             )
+            scenario_reason = scenario_termination_failure_reason(
+                status=termination_status, projection=projection
+            )
+            if scenario_reason is not None:
+                failure_reason = scenario_reason
 
             recorder.record_event(
                 "v3_flow_snapshot",
@@ -1067,13 +1329,20 @@ def execute_v3_asterisk_media(
                 asterisk_hangup_cause_text=(
                     hangup_result.cause_text if hangup_result is not None else None
                 ),
+                scenario=request.scenario_id,
+                scenario_state=scenario_metadata,
             )
 
             duration_seconds = recorder.elapsed_seconds
             artifact_status = (
                 "completed"
                 if projection.objective_complete
-                else termination_status.value
+                else (
+                    "target_capability_blocked"
+                    if scenario_metadata.get("experiment_status")
+                    == "target_capability_blocked"
+                    else termination_status.value
+                )
             )
             recorder.finalize(
                 status=artifact_status,

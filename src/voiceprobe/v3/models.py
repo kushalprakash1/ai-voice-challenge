@@ -29,8 +29,8 @@ class DecisionKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class PatientFacts:
-    first_name: str = "Alex"
-    last_name: str = "Morgan"
+    first_name: str = "Chitragupta"
+    last_name: str = "Subramnian Singh"
     dob: str = "April 12, 1998"
     insurance: str = "Blue Cross"
     complaint: str = "right shoulder pain"

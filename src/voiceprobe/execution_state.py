@@ -12,7 +12,6 @@ from decimal import ROUND_UP, Decimal
 from pathlib import Path
 from typing import Final
 
-from voiceprobe.policy import MAX_CALL_DURATION_SECONDS
 from voiceprobe.execution import (
     AuthorizedExecution,
     CallLedger,
@@ -20,8 +19,8 @@ from voiceprobe.execution import (
     CallLedgerError,
     CallStatus,
 )
+from voiceprobe.policy import MAX_CALL_DURATION_SECONDS
 
-HARD_BUDGET_CEILING_USD: Final = Decimal("20.00")
 MONEY_RESERVATION_QUANTUM_USD: Final = Decimal("0.01")
 
 
@@ -463,7 +462,7 @@ class BudgetPolicy:
     max_provider_rate_per_minute_usd: Decimal
 
     def __post_init__(self) -> None:
-        budget = _validate_money(
+        _validate_money(
             self.total_budget_usd,
             name="total_budget_usd",
             allow_zero=False,
@@ -475,8 +474,6 @@ class BudgetPolicy:
             allow_zero=False,
         )
 
-        if budget >= HARD_BUDGET_CEILING_USD:
-            raise BudgetStateError("Assessment budget must remain below $20.00.")
 
 
 @dataclass(frozen=True, slots=True)

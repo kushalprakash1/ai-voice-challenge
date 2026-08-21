@@ -1,12 +1,7 @@
 """Source-grounded semantic reasoning using local Ollama.
 
-IMPORTANT ARCHITECTURAL RULE:
-
-This module DOES NOT receive the patient profile.
-
-The semantic interpreter determines only what the remote agent communicated.
-Patient truth, goals, preferences, constraints, and decisions belong to later
-reasoning layers.
+This layer sees only the remote agent's words. Patient truth, goals,
+preferences, constraints, and decisions belong to later reasoning layers.
 """
 
 from __future__ import annotations

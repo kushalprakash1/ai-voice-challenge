@@ -246,6 +246,79 @@ SCENARIOS: Final[tuple[PatientScenario, ...]] = (
         ),
         probes=(ProbeKind.VERIFY_BOOKING_BEFORE_END,),
     ),
+    PatientScenario(
+        scenario_id="medication-refill-correction",
+        objective="Request a synthetic lisinopril refill and correct the dose.",
+        facts=PatientFacts(
+            name="Alex Morgan",
+            complaint="medication refill request",
+            duration="not applicable",
+            preferred_day="not applicable",
+            preferred_time="not applicable",
+        ),
+        test_targets=(
+            "medication_refill",
+            "dose_correction",
+            "correction_retention",
+            "fact_grounding",
+        ),
+    ),
+    PatientScenario(
+        scenario_id="farthest-date-scheduling",
+        objective="Find and, if possible, book the farthest future appointment date currently available.",
+        facts=PatientFacts(
+            name="Chitragupta Subramnian Singh", first_name="Chitragupta", last_name="Subramnian Singh",
+            patient_status="a new patient", visited_before=False,
+            appointment_type="a new patient consultation", complaint="right shoulder pain",
+            duration="not specified",
+            # Call #6 has a selection policy, not a calendar constraint.
+            # The farthest-date overlay owns LATEST/FURTHEST selection.
+            preferred_day=None,
+            preferred_time=None,
+        ),
+        test_targets=("latest_vs_earliest_intent", "booking_horizon", "farthest_date_selection", "horizon_consistency"),
+    ),
+    PatientScenario(
+        scenario_id="office-hours-location-insurance",
+        objective=(
+            "Establish self-pay status and adaptively switch between "
+            "target-offered office locations."
+        ),
+        facts=PatientFacts(
+            name="Chitragupta Subramnian Singh",
+            first_name="Chitragupta",
+            last_name="Subramnian Singh",
+            complaint="office information request",
+            duration="not applicable",
+            preferred_day="not applicable",
+            preferred_time="not applicable",
+        ),
+        test_targets=(
+            "self_pay_retention",
+            "dynamic_location_selection",
+            "location_switch_retention",
+            "office_hours_consistency",
+            "fact_grounding",
+        ),
+    ),
+    PatientScenario(
+        scenario_id="doctor-specialist-directory",
+        objective="Register the synthetic caller, verify the stored spelling, and investigate one target-offered specialist.",
+        facts=PatientFacts(
+            name="Gyeong-hyeon Gwak",
+            first_name="Gyeong-hyeon",
+            last_name="Gwak",
+            complaint="doctor directory information request",
+            duration="not applicable",
+            preferred_day="not applicable",
+            preferred_time="not applicable",
+        ),
+        test_targets=(
+            "profile_name_spelling", "grounded_specialist_selection",
+            "specialty_identity", "explicit_gender_only", "doctor_location",
+            "doctor_hours_consistency", "context_retention",
+        ),
+    ),
 )
 
 
@@ -271,6 +344,15 @@ def get_scenario(
     scenario_id: str,
 ) -> PatientScenario:
     """Resolve one scenario by its stable identifier."""
+    if scenario_id == "self-pay-location-switch":
+        current = _SCENARIO_BY_ID["office-hours-location-insurance"]
+        return PatientScenario(
+            scenario_id=scenario_id,
+            objective=current.objective,
+            facts=current.facts,
+            test_targets=current.test_targets,
+            probes=current.probes,
+        )
     try:
         return _SCENARIO_BY_ID[scenario_id]
     except KeyError as error:

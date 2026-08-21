@@ -34,6 +34,23 @@ class FlowStage(StrEnum):
     COMPLETE = "complete"
 
 
+class StateProvenance(StrEnum):
+    """Authority that established a dialogue-state value."""
+
+    CALLER_SCENARIO = "caller_scenario"
+    TARGET_OBSERVED = "target_observed"
+    COMMITTED_VALIDATED = "committed_validated"
+
+
+@dataclass(frozen=True, slots=True)
+class DialogueValue:
+    """A state value together with its authority and supporting evidence."""
+
+    value: object
+    provenance: StateProvenance
+    evidence: str | None = None
+
+
 ORDERED_STAGES: tuple[FlowStage, ...] = (
     FlowStage.PROFILE,
     FlowStage.IDENTITY,
@@ -59,6 +76,15 @@ class FlowSnapshot:
     accepted_slot_text: str | None = None
     booking_confirmation_text: str | None = None
     allow_earlier_week_afternoons: bool = False
+    caller_truth: Mapping[str, DialogueValue] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    target_observations: Mapping[str, DialogueValue] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    committed_dialogue: Mapping[str, DialogueValue] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
 
 @dataclass(slots=True)
@@ -68,13 +94,22 @@ class _MutableFlowState:
     accepted_slot_text: str | None = None
     booking_confirmation_text: str | None = None
     allow_earlier_week_afternoons: bool = False
+    caller_truth: dict[str, DialogueValue] = field(default_factory=dict)
+    target_observations: dict[str, DialogueValue] = field(default_factory=dict)
+    committed_dialogue: dict[str, DialogueValue] = field(default_factory=dict)
 
 
 class SchedulingFlowTracker:
     """Track scheduling progress without mutating authoritative patient facts."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        caller_truth: Mapping[str, object] | None = None,
+    ) -> None:
         self._state = _MutableFlowState()
+        for field_name, value in (caller_truth or {}).items():
+            self.establish_caller_truth(field_name, value)
 
     def snapshot(self) -> FlowSnapshot:
         current = self._current_stage()
@@ -94,7 +129,75 @@ class SchedulingFlowTracker:
             allow_earlier_week_afternoons=(
                 self._state.allow_earlier_week_afternoons
             ),
+            caller_truth=MappingProxyType(dict(self._state.caller_truth)),
+            target_observations=MappingProxyType(
+                dict(self._state.target_observations)
+            ),
+            committed_dialogue=MappingProxyType(
+                dict(self._state.committed_dialogue)
+            ),
         )
+
+    def establish_caller_truth(
+        self,
+        field_name: str,
+        value: object,
+        *,
+        evidence: str | None = None,
+    ) -> FlowSnapshot:
+        """Set a fact owned explicitly by the caller or scenario."""
+
+        key = _state_key(field_name)
+        self._state.caller_truth[key] = DialogueValue(
+            value=value,
+            provenance=StateProvenance.CALLER_SCENARIO,
+            evidence=evidence,
+        )
+        return self.snapshot()
+
+    def observe_target_value(
+        self,
+        field_name: str,
+        value: object,
+        *,
+        evidence: str | None = None,
+    ) -> FlowSnapshot:
+        """Replace a target observation without changing caller truth."""
+
+        key = _state_key(field_name)
+        self._state.target_observations[key] = DialogueValue(
+            value=value,
+            provenance=StateProvenance.TARGET_OBSERVED,
+            evidence=evidence,
+        )
+        return self.snapshot()
+
+    def commit_dialogue_value(
+        self,
+        field_name: str,
+        value: object,
+        *,
+        evidence: str | None = None,
+        grounded_in_target: str | None = None,
+    ) -> FlowSnapshot:
+        """Commit validated state, optionally requiring a matching observation."""
+
+        key = _state_key(field_name)
+        if grounded_in_target is not None:
+            observed = self._state.target_observations.get(
+                _state_key(grounded_in_target)
+            )
+            if observed is None or observed.value != value:
+                raise ValueError(
+                    f"{key} must match target observation {grounded_in_target}"
+                )
+
+        self._state.committed_dialogue[key] = DialogueValue(
+            value=value,
+            provenance=StateProvenance.COMMITTED_VALIDATED,
+            evidence=evidence,
+        )
+        return self.snapshot()
 
     def observe_remote_turn(self, agent_turn: str) -> FlowSnapshot:
         """Record explicit confirmations/assertions from the remote agent."""
@@ -175,6 +278,7 @@ class SchedulingFlowTracker:
         if (
             slot_text is not None
             and FlowStage.SLOT in self._state.communicated
+            and _same_state_value(slot_text, self._state.accepted_slot_text)
             and _contains_any(
                 text,
                 (
@@ -188,7 +292,6 @@ class SchedulingFlowTracker:
                 ),
             )
         ):
-            self._state.accepted_slot_text = slot_text
             self._state.booking_confirmation_text = raw
             self._confirm(
                 FlowStage.SLOT,
@@ -286,6 +389,17 @@ class SchedulingFlowTracker:
         if not normalized:
             raise ValueError("slot_text must not be empty")
 
+        grounded_in_target = (
+            "offered_slot"
+            if "offered_slot" in self._state.target_observations
+            else None
+        )
+        self.commit_dialogue_value(
+            "selected_slot",
+            normalized,
+            evidence="caller explicitly accepted the offered slot",
+            grounded_in_target=grounded_in_target,
+        )
         self._state.accepted_slot_text = normalized
         self._communicate(FlowStage.SLOT)
         return self.snapshot()
@@ -327,6 +441,30 @@ def _contains_any(
     return any(phrase in text for phrase in phrases)
 
 
+def _state_key(field_name: str) -> str:
+    key = field_name.strip()
+    if not key:
+        raise ValueError("field_name must not be empty")
+    return key
+
+
+def _same_state_value(left: object, right: object) -> bool:
+    if isinstance(left, str) and isinstance(right, str):
+        normalized_left = " ".join(left.casefold().split())
+        normalized_right = " ".join(right.casefold().split())
+        if normalized_left == normalized_right:
+            return True
+
+        left_slot = extract_concrete_slot(left)
+        right_slot = extract_concrete_slot(right)
+        if left_slot is not None and right_slot is not None:
+            return " ".join(left_slot.casefold().split()) == " ".join(
+                right_slot.casefold().split()
+            )
+        return False
+    return left == right
+
+
 _SLOT_TIME_RE = re.compile(
     r"\b(?:1[0-2]|0?[1-9])"
     r"(?::[0-5]\d|\.[0-5]\d)?"
@@ -356,6 +494,19 @@ def extract_concrete_slot(text: str) -> str | None:
         return spoken.group(0)
 
     return None
+
+
+def extract_concrete_pm_slots(text: str) -> tuple[str, ...]:
+    """Return concrete PM times in source order using the grounded grammar."""
+
+    matches = [
+        match
+        for regex in (_SLOT_TIME_RE, _SPOKEN_SLOT_TIME_RE)
+        for match in regex.finditer(text)
+        if re.search(r"p\.?m\.?$", match.group(0), flags=re.IGNORECASE)
+    ]
+    matches.sort(key=lambda match: (match.start(), match.end()))
+    return tuple(match.group(0) for match in matches)
 
 
 def _extract_concrete_slot(text: str) -> str | None:

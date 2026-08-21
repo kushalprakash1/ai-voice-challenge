@@ -3,13 +3,13 @@
 import re
 from dataclasses import dataclass
 
-from voiceprobe.safety import ALLOWED_TEST_NUMBER
+from voiceprobe.safety import destination_for_plan
 
 _E164_PATTERN = re.compile(r"^\+[1-9][0-9]{7,14}$")
 
 DEFAULT_MAX_CALL_DURATION_SECONDS = 180
 MAX_CALL_DURATION_SECONDS = 600
-DEFAULT_MAX_SUITE_CALLS = 15
+DEFAULT_MAX_SUITE_CALLS = 16
 
 
 class InvalidCallPolicyError(ValueError):
@@ -30,10 +30,10 @@ class CallPolicy:
             self.originating_number
         ):
             raise InvalidCallPolicyError(
-                "Originating number must use E.164 format, for example +14155551212."
+                "Originating number must use E.164 format, for example +12025550101."
             )
 
-        if self.originating_number == ALLOWED_TEST_NUMBER:
+        if self.originating_number == destination_for_plan():
             raise InvalidCallPolicyError(
                 "Originating number cannot be the assessment destination."
             )
@@ -53,9 +53,9 @@ class CallPolicy:
                 "Maximum suite size must be an integer number of calls."
             )
 
-        if not 1 <= self.max_suite_calls <= 15:
+        if not 1 <= self.max_suite_calls <= DEFAULT_MAX_SUITE_CALLS:
             raise InvalidCallPolicyError(
-                "Maximum suite size must be between 1 and 15 calls."
+                f"Maximum suite size must be between 1 and {DEFAULT_MAX_SUITE_CALLS} calls."
             )
 
         if type(self.dry_run) is not bool:
@@ -64,4 +64,4 @@ class CallPolicy:
     @property
     def destination(self) -> str:
         """Return the only destination VoiceProbe is authorized to call."""
-        return ALLOWED_TEST_NUMBER
+        return destination_for_plan()

@@ -22,8 +22,12 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
-
-
+from voiceprobe.v3.accent import ACCENT_MELO_INDIA, AccentCache
+from voiceprobe.v3.background import (
+    background_mode_from_environment,
+    background_snr_from_environment,
+    mix_background,
+)
 DEFAULT_VOICE = "af_heart"
 TELEPHONY_SAMPLE_RATE = 8_000
 ECHO_GUARD_SECONDS = 0.35
@@ -36,6 +40,7 @@ class RecorderLike(Protocol):
 
 
 SynthesizeFn = Callable[..., Any]
+MeloSynthesizeFn = Callable[[str], bytes]
 NormalizeFn = Callable[[str], str]
 ResampleFn = Callable[[Any], Any]
 EncodeFn = Callable[[Any], bytes]
@@ -43,6 +48,41 @@ SendAudioFn = Callable[..., None]
 IdleSilenceFn = Callable[..., None]
 PlaybackFinishedFn = Callable[[], Any]
 SubmitPCMFn = Callable[[bytes], Any]
+
+
+async def _run_in_owned_thread(
+    operation: Callable[..., Any],
+    *args: Any,
+) -> Any:
+    """Run one blocking media operation without the shared asyncio executor."""
+
+    completed = threading.Event()
+    outcome: list[tuple[bool, Any]] = []
+
+    def run() -> None:
+        try:
+            outcome.append((True, operation(*args)))
+        except BaseException as error:
+            outcome.append((False, error))
+        finally:
+            completed.set()
+
+    worker = threading.Thread(
+        target=run,
+        name="voiceprobe-v3-media-operation",
+    )
+    worker.start()
+
+    try:
+        while not completed.is_set():
+            await asyncio.sleep(0.001)
+    finally:
+        worker.join()
+
+    succeeded, value = outcome[0]
+    if not succeeded:
+        raise value
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +118,8 @@ class KokoroTelephonyRenderer:
         normalize_fn: NormalizeFn | None = None,
         resample_fn: ResampleFn | None = None,
         encode_fn: EncodeFn | None = None,
+        accent_cache: AccentCache | None = None,
+        melo_synthesize_fn: MeloSynthesizeFn | None = None,
     ) -> None:
         config.validate()
 
@@ -89,16 +131,64 @@ class KokoroTelephonyRenderer:
         self._normalize_fn = normalize_fn
         self._resample_fn = resample_fn
         self._encode_fn = encode_fn
+        self._accent_cache = accent_cache
+        self._melo_synthesize_fn = melo_synthesize_fn
 
     @property
     def config(self) -> AudioSocketKokoroConfig:
         return self._config
 
     def render(self, text: str) -> bytes:
+        pcm, _ = self.render_with_metadata(text)
+        return pcm
+
+    def render_with_metadata(self, text: str) -> tuple[bytes, dict[str, object]]:
         stripped = text.strip()
 
         if not stripped:
             raise ValueError("Cannot render empty patient speech")
+
+        if self._accent_cache is not None:
+            lookup = self._accent_cache.lookup(stripped)
+            korean = self._accent_cache.mode == "chatterbox_korean_heavy"
+            same_voice_miss = not lookup.hit and self._accent_cache.mode == ACCENT_MELO_INDIA
+            metadata: dict[str, object] = {
+                "accent_mode": self._accent_cache.mode,
+                "tts_backend": (("chatterbox_multilingual_cache" if korean else "melo_accent_cache") if lookup.hit else ("MeloTTS" if same_voice_miss else "kokoro_fallback")),
+                "accent_renderer": "Chatterbox Multilingual/synthetic Korean reference" if korean else "MeloTTS/EN_INDIA",
+                "accent_speaker": "synthetic_local_korean_reference_v1" if korean else "EN_INDIA",
+                "accent_cache_hit": lookup.hit,
+                "accent_cache_key": lookup.cache_key,
+                "accent_fallback_used": not lookup.hit and not same_voice_miss,
+                "accent_same_voice_miss_rendered": same_voice_miss,
+                "accent_cache_lookup_ms": round(lookup.lookup_ms, 6),
+                "accent_audio_load_ms": round(lookup.audio_load_ms, 6),
+            }
+            if lookup.hit and lookup.pcm is not None:
+                return self._apply_background(lookup.pcm, metadata)
+            metadata["accent_cache_invalid_reason"] = lookup.invalid_reason
+            pcm = self._render_melo_india(stripped) if same_voice_miss else self._render_kokoro(stripped)
+            return self._apply_background(pcm, metadata)
+
+        return self._apply_background(self._render_kokoro(stripped), {
+            "accent_mode": "none",
+            "tts_backend": "kokoro",
+            "accent_cache_hit": False,
+            "accent_cache_key": None,
+            "accent_fallback_used": False,
+        })
+
+    @staticmethod
+    def _apply_background(pcm: bytes, metadata: dict[str, object]) -> tuple[bytes, dict[str, object]]:
+        result = mix_background(
+            pcm,
+            mode=background_mode_from_environment(),
+            target_snr_db=background_snr_from_environment(),
+        )
+        metadata.update(result.metadata)
+        return result.pcm, metadata
+
+    def _render_kokoro(self, stripped: str) -> bytes:
 
         synthesize_fn, normalize_fn, resample_fn, encode_fn = (
             self._resolved_functions()
@@ -122,6 +212,17 @@ class KokoroTelephonyRenderer:
             raise ValueError("Kokoro telephony rendering produced empty PCM")
 
         return pcm16
+
+    def _render_melo_india(self, stripped: str) -> bytes:
+        synthesize_fn = self._melo_synthesize_fn
+        if synthesize_fn is None:
+            from voiceprobe.v3.accent import render_melo_india_pcm
+
+            synthesize_fn = render_melo_india_pcm
+        pcm16 = synthesize_fn(stripped)
+        if not pcm16:
+            raise ValueError("MeloTTS EN_INDIA rendering produced empty PCM")
+        return bytes(pcm16)
 
     def _resolved_functions(
         self,
@@ -247,14 +348,38 @@ class AudioSocketKokoroSpeechTask:
             self._render_and_play(text.strip())
         )
 
-    async def wait_for_idle(self) -> None:
+    async def wait_for_idle(
+        self,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        if timeout_seconds is not None and timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+
+        loop = asyncio.get_running_loop()
+        deadline = (
+            None
+            if timeout_seconds is None
+            else loop.time() + timeout_seconds
+        )
+
         while True:
             task = self._playback_task
 
             if task is None:
                 break
 
-            await task
+            while not task.done():
+                if deadline is not None and loop.time() >= deadline:
+                    raise TimeoutError(
+                        "AudioSocket playback did not become idle before timeout"
+                    )
+                await asyncio.sleep(0.001)
+
+            # Retrieve the task result only after observing completion. Direct
+            # suspension on this self-clearing background task can strand an
+            # awaiter on Python 3.12 even though task.done() is already true.
+            task.result()
 
             if self._last_error is not None:
                 raise self._last_error
@@ -267,6 +392,7 @@ class AudioSocketKokoroSpeechTask:
 
     async def _render_and_play(self, text: str) -> None:
         success = False
+        render_metadata: dict[str, object] = {}
 
         try:
             self._record_event(
@@ -274,33 +400,30 @@ class AudioSocketKokoroSpeechTask:
                 text=text,
             )
 
-            pcm16 = await asyncio.to_thread(
-                self._renderer.render,
-                text,
-            )
+            render_with_metadata = getattr(self._renderer, "render_with_metadata", None)
+            if render_with_metadata is None:
+                pcm16 = await _run_in_owned_thread(self._renderer.render, text)
+            else:
+                pcm16, render_metadata = await _run_in_owned_thread(render_with_metadata, text)
 
-            self._record_event(
-                "v3_playback_started",
-                text=text,
-                pcm_bytes=len(pcm16),
-            )
-
-            await asyncio.to_thread(
-                self._send_audio,
-                pcm16,
-            )
-
-            self._record_event(
-                "v3_audio_sent",
-                text=text,
-                pcm_bytes=len(pcm16),
-            )
-
-            if self._config.echo_guard_seconds:
-                await asyncio.sleep(
-                    self._config.echo_guard_seconds
+            self._record_event("v3_playback_prepared", text=text, pcm_bytes=len(pcm16), **render_metadata)
+            if render_metadata.get("accent_cache_hit") is False and render_metadata.get("accent_mode") != "none":
+                self._record_event(
+                    "v3_accent_cache_miss",
+                    scenario=self._accent_cache_scenario(),
+                    accent=render_metadata.get("accent_mode"),
+                    exact_response_text=text,
+                    cache_key=render_metadata.get("accent_cache_key"),
+                    fallback_used=bool(render_metadata.get("accent_fallback_used")),
+                    same_voice_miss_rendered=bool(render_metadata.get("accent_same_voice_miss_rendered")),
                 )
 
+            await _run_in_owned_thread(self._send_audio, pcm16)
+            self._record_event(
+                "v3_audio_sent", text=text, pcm_bytes=len(pcm16), **render_metadata
+            )
+            if self._config.echo_guard_seconds:
+                await asyncio.sleep(self._config.echo_guard_seconds)
             success = True
         except BaseException as error:
             self._last_error = error
@@ -324,27 +447,21 @@ class AudioSocketKokoroSpeechTask:
         self._record_event(
             "v3_playback_finished",
             text=text,
+            **render_metadata,
         )
 
         callback = self._on_playback_finished
-
         if callback is not None:
             maybe = callback()
 
             if inspect.isawaitable(maybe):
                 await maybe
 
+    def _accent_cache_scenario(self) -> str | None:
+        cache = getattr(self._renderer, "_accent_cache", None)
+        return getattr(cache, "scenario", None)
+
     def _send_audio(self, pcm16: bytes) -> None:
-        observer = self._audio_observer
-
-        if observer is not None:
-            try:
-                # Observer contract is non-blocking. Any monitor failure is
-                # deliberately isolated from the telephony send path.
-                observer(pcm16)
-            except Exception:
-                pass
-
         send_audio_fn = self._send_audio_fn
 
         if send_audio_fn is None:
@@ -353,6 +470,13 @@ class AudioSocketKokoroSpeechTask:
             )
 
             send_audio_fn = send_audio_synchronized
+
+        observer = self._audio_observer
+        if observer is not None:
+            try:
+                observer(pcm16)
+            except Exception:
+                pass
 
         send_audio_fn(
             self._connection,
