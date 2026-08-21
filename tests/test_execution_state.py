@@ -28,7 +28,7 @@ from voiceprobe.scenarios.catalog import (
 )
 from voiceprobe.suite import build_suite_plan
 
-ORIGINATING_NUMBER = "+14155551212"
+ORIGINATING_NUMBER = "+12025550101"
 
 
 def authorization(
@@ -244,14 +244,9 @@ def test_tampered_scenario_order_is_rejected(
         )
 
 
-def test_budget_policy_rejects_twenty_dollars() -> None:
-    with pytest.raises(
-        BudgetStateError,
-        match="below",
-    ):
-        budget_policy(
-            total="20.00",
-        )
+def test_budget_policy_accepts_explicit_per_run_ceiling() -> None:
+    policy = budget_policy(total="20.00")
+    assert policy.total_budget_usd == Decimal("20.00")
 
 
 def test_budget_reservation_rounds_up_to_cent() -> None:

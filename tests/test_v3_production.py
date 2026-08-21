@@ -60,7 +60,7 @@ def test_production_flux_config_is_frozen_to_proven_settings() -> None:
     assert config.eot_threshold == 0.85
     assert config.eot_timeout_ms == 5000
     assert config.eager_eot_threshold is None
-    assert config.continuation_grace_ms == 900.0
+    assert config.continuation_grace_ms == 3000.0
     assert config.flux_encoding == "linear16"
     assert "Pivot Point" in config.keyterms
     assert "Blue Cross" in config.keyterms
@@ -228,14 +228,14 @@ def test_production_grace_restarts_on_remote_continuation(
 ) -> None:
     import asyncio
 
-    import voiceprobe.v3.ingress as ingress
+    from voiceprobe.v3 import ingress
 
     real_sleep = asyncio.sleep
     requested_delays = []
     gates = []
 
     async def controlled_sleep(seconds):
-        if seconds == 0.9:
+        if seconds == 3.0:
             requested_delays.append(seconds)
 
             gate = asyncio.Event()
@@ -283,7 +283,7 @@ def test_production_grace_restarts_on_remote_continuation(
 
         await real_sleep(0)
 
-        assert requested_delays == [0.9]
+        assert requested_delays == [3.0]
         assert worker.frames == []
 
         # The remote side resumes before the grace period is released.
@@ -301,7 +301,7 @@ def test_production_grace_restarts_on_remote_continuation(
         await real_sleep(0)
 
         # A new full grace period is now armed.
-        assert requested_delays == [0.9, 0.9]
+        assert requested_delays == [3.0, 3.0]
         assert worker.frames == []
 
         # Release only the latest timer.

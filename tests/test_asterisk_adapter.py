@@ -22,7 +22,7 @@ from voiceprobe.telephony.asterisk_adapter import (
     AsteriskMediaOutcome,
 )
 
-CALLER = "+18402001303"
+CALLER = "+12025550101"
 CALL_ID = UUID("11111111-2222-4333-8444-555555555555")
 
 
@@ -184,7 +184,7 @@ def test_unsafe_destination_is_rejected_before_any_side_effect() -> None:
     )
 
     with pytest.raises(UnsafeDestinationError):
-        adapter.execute_call(make_request(destination="+14155551212"))
+        adapter.execute_call(make_request(destination="+12025550101"))
 
     assert events == []
 
@@ -201,7 +201,7 @@ def test_originating_number_mismatch_is_rejected_before_any_side_effect() -> Non
         CallExecutionError,
         match="originating number",
     ):
-        adapter.execute_call(make_request(originating_number=("+14155551212")))
+        adapter.execute_call(make_request(originating_number=("+12025550102")))
 
     assert events == []
 

@@ -25,6 +25,41 @@ def test_idle_end_of_turn_is_decided_immediately() -> None:
     assert result.emission_reason == "immediate_end_of_turn"
 
 
+def test_suppressed_candidate_recoalesces_with_illustrative_continuation() -> None:
+    ingress = RemoteSpeechBurstBuffer()
+    first = ingress.ingest_end_of_turn(
+        "Can you tell me the reason for your visit?"
+    )
+    assert first is not None
+
+    ingress.mark_response_started()
+    assert ingress.ingest_end_of_turn(
+        "For example, is this a routine checkup, a follow-up, or urgent?"
+    ) is None
+
+    result = ingress.mark_response_suppressed()
+
+    assert result is not None
+    assert result.source_turns == (
+        "Can you tell me the reason for your visit?",
+        "For example, is this a routine checkup, a follow-up, or urgent?",
+    )
+    assert result.decision.kind == DecisionKind.ANSWER_COMPLAINT
+    assert result.decision.text == "I have right shoulder pain."
+    assert result.emission_reason == "suppressed_candidate_recoalesced"
+
+
+def test_suppressed_candidate_without_continuation_is_not_reprocessed() -> None:
+    ingress = RemoteSpeechBurstBuffer()
+    first = ingress.ingest_end_of_turn(
+        "Just to confirm, is this a new patient consultation?"
+    )
+    assert first is not None
+    ingress.mark_response_started()
+
+    assert ingress.mark_response_suppressed() is None
+
+
 def test_busy_remote_speech_is_coalesced_not_fifo_replayed() -> None:
     ingress = RemoteSpeechBurstBuffer()
     ingress.mark_response_started()

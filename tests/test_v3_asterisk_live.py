@@ -4,7 +4,10 @@ from dataclasses import dataclass
 
 import pytest
 
-from voiceprobe.v3.asterisk_live import project_v3_flow_snapshot
+from voiceprobe.v3.asterisk_live import (
+    project_v3_flow_snapshot,
+    scenario_termination_failure_reason,
+)
 from voiceprobe.v3.flow_state import FlowSnapshot, FlowStage
 
 
@@ -67,6 +70,42 @@ def test_projection_treats_v3_complete_as_authoritative_booking_confirmation() -
     assert result.booking_confirmed is True
     assert result.offer_accepted is True
     assert result.booking_confirmation_text == "You're booked Friday at 2:30 PM."
+
+
+def test_medication_projection_and_failure_are_scenario_specific() -> None:
+    snapshot = _snapshot(_ProjectionCase(False, None, None))
+    projection = project_v3_flow_snapshot(
+        snapshot,
+        scenario_id="medication-refill-correction",
+        scenario_metadata={
+            "scenario_stage": "correct_dose",
+            "dose_correction_spoken": True,
+            "dose_acknowledged": False,
+            "objective_complete": False,
+        },
+    )
+
+    reason = scenario_termination_failure_reason(
+        status="max_duration_termination", projection=projection
+    )
+    assert projection.objective_complete is False
+    assert projection.booking_confirmed is False
+    assert "medication-refill-correction objective" in reason
+    assert "dose_correction_spoken=True" in reason
+    assert "scheduling objective" not in reason
+    assert "booking_confirmed" not in reason
+    assert "offered_day" not in reason
+
+
+def test_self_pay_projection_uses_its_own_objective_state() -> None:
+    snapshot = _snapshot(_ProjectionCase(False, None, None))
+    projection = project_v3_flow_snapshot(
+        snapshot,
+        scenario_id="self-pay-location-switch",
+        scenario_metadata={"objective_complete": True},
+    )
+    assert projection.objective_complete is True
+    assert projection.booking_confirmed is False
 
 
 def test_adapter_v3_environment_switch_is_explicit(monkeypatch) -> None:

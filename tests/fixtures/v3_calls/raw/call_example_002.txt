@@ -1,0 +1,12 @@
+VoiceProbe synthetic terminal fixture
+Call ID: example-call-002
+Execution ID: assessment-example-002
+Artifact run ID: example-autonomous-phone-run-002
+Destination: +12025550124
+Provider call ID: example-provider-id-002
+Artifact path: /tmp/voiceprobe/example-autonomous-phone-run-002
+
+[AGENT] What day and time work for you?
+[PATIENT] Friday afternoon.
+[AGENT] I can check those options.
+[PATIENT] Thank you.

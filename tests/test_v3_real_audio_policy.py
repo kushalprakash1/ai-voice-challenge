@@ -6,7 +6,6 @@ from voiceprobe.v3.flow_state import FlowStage, SchedulingFlowTracker
 from voiceprobe.v3.models import DecisionKind
 from voiceprobe.v3.runtime import VoiceProbeV3Runtime
 
-
 FIXTURE = (
     Path(__file__).parent
     / "fixtures"
@@ -28,7 +27,9 @@ def test_composite_disclaimer_does_not_swallow_profile_request() -> None:
     runtime = VoiceProbeV3Runtime()
     result = asyncio.run(runtime.process_turns([row["text"]]))
     assert result.decision.kind == DecisionKind.CREATE_PROFILE
-    assert result.decision.text == "Yes, please. My name is Alex Morgan."
+    assert result.decision.text == (
+        "Yes, please. My name is Chitragupta Subramnian Singh."
+    )
 
 
 def test_real_audio_short_ack_is_not_fallback() -> None:

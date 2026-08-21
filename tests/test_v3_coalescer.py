@@ -51,3 +51,20 @@ def test_provider_request_beats_prior_availability_status() -> None:
 
     assert result.decision.kind == DecisionKind.ANSWER_PROVIDER_PREFERENCE
     assert result.decision.text == "First available is fine."
+
+
+def test_direct_question_owns_trailing_illustrative_fragment() -> None:
+    result = ConversationBurstCoalescer().coalesce(
+        [
+            "Can you tell me the reason for your visit?",
+            (
+                "For example, is this a routine checkup, a follow-up, "
+                "or something urgent?"
+            ),
+        ]
+    )
+
+    assert result.actionable_turn == "Can you tell me the reason for your visit?"
+    assert result.decision.kind == DecisionKind.ANSWER_COMPLAINT
+    assert result.decision.text == "I have right shoulder pain."
+    assert "consultation" not in result.decision.text.casefold()

@@ -13,7 +13,6 @@ from voiceprobe.v3.production import (
     PipecatRuntimeBridge,
 )
 from voiceprobe.v3.runtime import DecisionRoute
-
 from voiceprobe.v32.runtime_fallback import (
     V32SemanticFallbackResolver,
 )
@@ -254,8 +253,7 @@ def test_complete_option_confuser_reschedule_flow():
         assert (
             authorize.decision.text
             == (
-                "Yes, that's the exact time I want. "
-                "You can book it."
+                "Yes, you can book it—the two fifteen PM slot."
             )
         )
 
@@ -267,7 +265,8 @@ def test_complete_option_confuser_reschedule_flow():
         assert not authorize.after.complete
 
         # ----------------------------------------------------
-        # 8. Only explicit REMOTE confirmation may complete.
+        # 8. A confirmation that introduces an ungrounded date must not
+        # complete the objective, even when its time matches the accepted slot.
         # ----------------------------------------------------
         confirmed = await bridge.runtime.process_turns([
             (
@@ -276,17 +275,14 @@ def test_complete_option_confuser_reschedule_flow():
             )
         ])
 
-        assert confirmed.after.complete
+        assert not confirmed.after.complete
 
         assert (
             confirmed.after.accepted_slot_text
             is not None
         )
 
-        assert (
-            confirmed.after.booking_confirmation_text
-            is not None
-        )
+        assert confirmed.after.booking_confirmation_text is None
 
         # ----------------------------------------------------
         # Global invariants.

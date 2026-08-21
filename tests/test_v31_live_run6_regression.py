@@ -70,3 +70,12 @@ def test_booking_confirmation_does_not_answer_blue_cross():
 
     assert result.decision.text != "Blue Cross."
     assert result.decision.kind != DecisionKind.ANSWER_FACT
+
+
+def test_capability_menu_does_not_request_insurance():
+    decision = RoutineSchedulingPolicy().decide(
+        "I can help with appointments, medication refills, insurance updates, and more."
+    )
+
+    assert decision.reason != "insurance_requested"
+    assert decision.text != "Blue Cross."

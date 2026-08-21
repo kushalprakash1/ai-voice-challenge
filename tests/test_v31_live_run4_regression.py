@@ -9,7 +9,6 @@ from voiceprobe.v3.semantic_router import (
     _complex_scheduling_action,
 )
 
-
 LIVE_RUN4_TURN = (
     "There are no Friday afternoon openings available. "
     "Would you like to look at afternoon slots on another day "
@@ -74,10 +73,10 @@ def test_complex_turn_without_specific_day_still_never_repeats():
     assert "afternoon" in decision.text.casefold()
 
 
-def test_live_production_uses_900ms_continuation_grace():
+def test_live_production_uses_3000ms_continuation_grace():
     assert (
         DEFAULT_PRODUCTION_FLUX_CONFIG.continuation_grace_ms
-        == 900.0
+        == 3000.0
     )
 
 
@@ -157,8 +156,10 @@ def test_live_run4_runtime_resolve_then_accepts_pm_slot():
         assert branch.after.allow_earlier_week_afternoons
 
         slot = await runtime.process_turns([
-            "I have Monday at 2:30 PM. "
-            "Would that work for you?"
+            (
+                "I have Monday at 2:30 PM. "
+                "Would that work for you?"
+            )
         ])
 
         assert slot.decision.kind == (

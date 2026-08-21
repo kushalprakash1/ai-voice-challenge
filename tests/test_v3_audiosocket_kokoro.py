@@ -133,7 +133,7 @@ def test_queue_frame_returns_before_background_playback_finishes() -> None:
         assert sent == []
 
         gate.set()
-        await speech.wait_for_idle()
+        await speech.wait_for_idle(timeout_seconds=2)
 
         assert sent == [b"pcm"]
         assert not speech.playback_active.is_set()
@@ -171,7 +171,7 @@ def test_playback_finish_callback_runs_after_echo_guard() -> None:
         )
 
         await speech.queue_frame(FakeFrame("Hello"))
-        await speech.wait_for_idle()
+        await speech.wait_for_idle(timeout_seconds=2)
 
         assert sequence == ["sent", "finished"]
 
@@ -201,7 +201,7 @@ def test_failed_playback_does_not_release_runtime_callback() -> None:
         await speech.queue_frame(FakeFrame("Hello"))
 
         with pytest.raises(BrokenPipeError):
-            await speech.wait_for_idle()
+            await speech.wait_for_idle(timeout_seconds=2)
 
         assert callbacks == []
         assert not speech.playback_active.is_set()
@@ -258,7 +258,7 @@ def test_media_boundary_records_everything_but_mutes_flux_during_playback() -> N
         ) is False
 
         gate.set()
-        await speech.wait_for_idle()
+        await speech.wait_for_idle(timeout_seconds=2)
 
         assert boundary.forward_inbound_pcm(
             b"after",
@@ -402,7 +402,7 @@ def test_playback_completion_can_chain_buffered_runtime_response() -> None:
         assert bridge.runtime.ingress.burst_buffer.pending_turns
         assert speech.queued_count == 1
 
-        await speech.wait_for_idle()
+        await speech.wait_for_idle(timeout_seconds=2)
 
         assert sent == [b"pcm", b"pcm"]
         assert speech.queued_count == 2

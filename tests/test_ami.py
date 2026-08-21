@@ -97,7 +97,7 @@ def test_config_rejects_remote_ami_host() -> None:
         AsteriskAMIConfig(
             username="voiceprobe",
             secret=SECRET,
-            host="10.0.0.20",
+            host="192.0.2.20",
         )
 
 

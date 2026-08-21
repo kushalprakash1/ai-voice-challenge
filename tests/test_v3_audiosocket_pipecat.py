@@ -94,10 +94,24 @@ def test_submit_pcm_is_thread_safe_handoff() -> None:
             frame_factory=FakeAudioFrame,
         )
 
-        future = await asyncio.to_thread(
-            feeder.submit_pcm,
-            bytes(320),
-        )
+        submitted = []
+        completed = threading.Event()
+
+        def submit() -> None:
+            try:
+                submitted.append(feeder.submit_pcm(bytes(320)))
+            finally:
+                completed.set()
+
+        thread = threading.Thread(target=submit)
+        thread.start()
+        async with asyncio.timeout(1):
+            while not completed.is_set():
+                await asyncio.sleep(0.001)
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+
+        future = submitted[0]
         await asyncio.wrap_future(future)
 
         assert len(worker.frames) == 1
@@ -162,7 +176,7 @@ def test_runtime_decision_reaches_kokoro_speech_sink_and_releases_busy() -> None
         assert result.response_ready
         assert speech.queued_count == 1
 
-        await speech.wait_for_idle()
+        await speech.wait_for_idle(timeout_seconds=2)
 
         assert sent == [b"pcm"]
         assert bridge.runtime.ingress.burst_buffer.response_busy is False
@@ -185,7 +199,7 @@ def test_speech_task_queue_frames_accepts_single_runtime_frame() -> None:
         await speech.queue_frames(
             [FakeFrame("First available is fine.")]
         )
-        await speech.wait_for_idle()
+        await speech.wait_for_idle(timeout_seconds=2)
 
         assert speech.queued_count == 1
 

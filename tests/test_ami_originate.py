@@ -13,7 +13,7 @@ from voiceprobe.telephony.ami import (
 )
 
 SECRET = "synthetic-secret"
-DESTINATION = "+14155551212"
+DESTINATION = "+12025550101"
 CALL_ID = UUID("550e8400-e29b-41d4-a716-446655440000")
 
 
@@ -152,7 +152,7 @@ def test_successful_originate_sends_exact_protocol() -> None:
                 b"Event: OriginateResponse\r\n"
                 b"ActionID: originate-1\r\n"
                 b"Response: Success\r\n"
-                b"Channel: Local/+14155551212@voiceprobe-test-00000001;1\r\n"
+                b"Channel: Local/+12025550101@voiceprobe-test-00000001;1\r\n"
                 b"Reason: 4\r\n"
                 b"Uniqueid: 1750000000.123\r\n"
                 b"\r\n"
@@ -182,7 +182,7 @@ def test_successful_originate_sends_exact_protocol() -> None:
 
     assert b"Events: call\r\n" in sent
     assert b"Action: Originate\r\n" in sent
-    assert b"Channel: Local/+14155551212@voiceprobe-test\r\n" in sent
+    assert b"Channel: Local/+12025550101@voiceprobe-test\r\n" in sent
     assert b"Application: AudioSocket\r\n" in sent
     assert (b"Data: 550e8400-e29b-41d4-a716-446655440000,127.0.0.1:9019\r\n") in sent
     assert b"Timeout: 30000\r\n" in sent
@@ -377,7 +377,7 @@ def test_originate_rejects_header_injection_destination() -> None:
         ValueError,
         match="line breaks",
     ):
-        client.originate_audiosocket("+14155551212\r\nApplication: System")
+        client.originate_audiosocket("+12025550101\r\nApplication: System")
 
 
 def test_originate_rejects_non_nanp_destination() -> None:

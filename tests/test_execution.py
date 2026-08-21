@@ -20,7 +20,7 @@ from voiceprobe.policy import CallPolicy
 from voiceprobe.safety import ALLOWED_TEST_NUMBER
 from voiceprobe.suite import build_suite_plan
 
-ORIGINATING_NUMBER = "+14155551212"
+ORIGINATING_NUMBER = "+12025550101"
 
 
 def policy(
@@ -65,7 +65,7 @@ def test_prepare_execution_freezes_exact_suite() -> None:
         dry_run=True,
     )
 
-    assert manifest.call_count == 12
+    assert manifest.call_count == 16
     assert manifest.destination == ALLOWED_TEST_NUMBER
     assert manifest.originating_number == ORIGINATING_NUMBER
     assert manifest.concurrency == 1
@@ -95,7 +95,7 @@ def test_prepare_rejects_changed_destination() -> None:
 
     suite = replace(
         build_suite_plan(active_policy),
-        destination="+14155550000",
+        destination="+12025550109",
     )
 
     with pytest.raises(ValueError):
@@ -176,7 +176,7 @@ def test_confirmation_token_is_required() -> None:
 def test_valid_manifest_can_cross_live_boundary() -> None:
     authorization = authorized_execution()
 
-    assert authorization.manifest.call_count == 12
+    assert authorization.manifest.call_count == 16
     assert authorization.confirmation_token == LIVE_CONFIRMATION_TOKEN
 
 
@@ -197,7 +197,7 @@ def test_execution_manifest_is_written_locally(
     assert payload["execution_id"] == "assessment-test"
     assert payload["destination"] == ALLOWED_TEST_NUMBER
     assert payload["dry_run"] is True
-    assert len(payload["scenario_ids"]) == 12
+    assert len(payload["scenario_ids"]) == 16
 
 
 def test_ledger_starts_planned_call() -> None:

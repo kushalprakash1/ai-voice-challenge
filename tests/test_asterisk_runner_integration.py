@@ -32,7 +32,7 @@ from voiceprobe.telephony.asterisk_adapter import (
     AsteriskMediaOutcome,
 )
 
-ORIGINATING_NUMBER = "+14155551212"
+ORIGINATING_NUMBER = "+12025550101"
 
 CALL_IDS = (
     UUID("11111111-2222-4333-8444-555555555555"),
@@ -127,7 +127,7 @@ class FakeAMIClient:
         call_id: UUID | None = None,
         timeout_ms: int = 30_000,
     ) -> OriginateResult:
-        assert destination == "+18054398008"
+        assert destination == "+12025550100"
         assert call_id is not None
         assert timeout_ms == 30_000
 

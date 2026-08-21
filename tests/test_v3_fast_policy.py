@@ -25,9 +25,7 @@ def test_all_annotated_live_call_regressions() -> None:
 
 
 def test_generic_objective_is_not_used_for_reason_for_visit() -> None:
-    decision = RoutineSchedulingPolicy().decide(
-        "What is the reason for your visit?"
-    )
+    decision = RoutineSchedulingPolicy().decide("What is the reason for your visit?")
 
     assert "shoulder" in decision.text.casefold()
     assert "friday afternoon" not in decision.text.casefold()
@@ -35,34 +33,30 @@ def test_generic_objective_is_not_used_for_reason_for_visit() -> None:
 
 def test_provider_choice_uses_stored_provider_preference() -> None:
     decision = RoutineSchedulingPolicy().decide(
-        (
-            "We have openings on Friday afternoon with two providers. "
-            "Would you prefer Dr. A or Dr. B, or is the first available okay?"
-        )
+        "We have openings on Friday afternoon with two providers. "
+        "Would you prefer Dr. A or Dr. B, or is the first available okay?"
     )
 
     assert decision.text == "First available is fine."
+
 
 def test_provider_choice_handles_generic_offer_first_available_wording() -> None:
     policy = RoutineSchedulingPolicy()
 
     decision = policy.decide(
-        (
-            "We have openings on Friday afternoon with doctor A and doctor B. "
-            "Do you have a preference, or should I offer the first available?"
-        )
+        "We have openings on Friday afternoon with doctor A and doctor B. "
+        "Do you have a preference, or should I offer the first available?"
     )
 
     assert decision.kind.value == "answer_provider_preference"
     assert decision.text == "First available is fine."
     assert decision.reason == "provider_preference_requested"
 
+
 def test_compatible_concrete_friday_afternoon_slot_is_accepted() -> None:
     decision = RoutineSchedulingPolicy().decide(
-        (
-            "I have Friday at 2:30 PM with the first available provider. "
-            "Would that work for you?"
-        )
+        "I have Friday at 2:30 PM with the first available provider. "
+        "Would that work for you?"
     )
 
     assert decision.kind.value == "grant_permission"
@@ -101,10 +95,8 @@ def test_day_or_provider_fallback_explicitly_chooses_earlier_week_afternoon() ->
     policy = RoutineSchedulingPolicy()
 
     decision = policy.decide(
-        (
-            "Would you like me to check afternoon options on a different day "
-            "or check with a different provider?"
-        )
+        "Would you like me to check afternoon options on a different day "
+        "or check with a different provider?"
     )
 
     assert decision.kind.value == "choose_search_branch"
@@ -129,16 +121,12 @@ def test_direct_earlier_week_afternoon_search_is_explicit() -> None:
 def test_earlier_week_pm_slot_is_accepted_only_after_relaxation() -> None:
     policy = RoutineSchedulingPolicy()
 
-    before = policy.decide(
-        "I have Tuesday at 2:30 PM. Would that work for you?"
-    )
+    before = policy.decide("I have Tuesday at 2:30 PM. Would that work for you?")
     assert before.kind.value == "decline_incompatible_offer"
 
     policy.relax_day_constraint_for_afternoon()
 
-    after = policy.decide(
-        "I have Tuesday at 2:30 PM. Would that work for you?"
-    )
+    after = policy.decide("I have Tuesday at 2:30 PM. Would that work for you?")
     assert after.kind.value == "grant_permission"
     assert after.reason == "compatible_concrete_slot_offered"
 
@@ -147,9 +135,7 @@ def test_morning_remains_incompatible_after_day_relaxation() -> None:
     policy = RoutineSchedulingPolicy()
     policy.relax_day_constraint_for_afternoon()
 
-    decision = policy.decide(
-        "I have Tuesday at 9 AM. Would that work for you?"
-    )
+    decision = policy.decide("I have Tuesday at 9 AM. Would that work for you?")
 
     assert decision.kind.value == "decline_incompatible_offer"
     assert "afternoon" in decision.text.casefold()
@@ -160,20 +146,17 @@ def test_weekend_pm_is_not_accepted_by_earlier_week_relaxation() -> None:
     policy = RoutineSchedulingPolicy()
     policy.relax_day_constraint_for_afternoon()
 
-    decision = policy.decide(
-        "I have Saturday at 2:30 PM. Would that work for you?"
-    )
+    decision = policy.decide("I have Saturday at 2:30 PM. Would that work for you?")
 
     assert decision.kind.value == "decline_incompatible_offer"
     assert decision.reason == "offer_outside_relaxed_earlier_week_window"
 
+
 def test_live_run2_wrong_dob_trailing_comma_is_actionable() -> None:
     decision = RoutineSchedulingPolicy().decide(
-        (
-            "Your patient profile is set up, and your date of birth is "
-            "July fourth two thousand for demo purposes. "
-            "How may I help you today,"
-        )
+        "Your patient profile is set up, and your date of birth is "
+        "July fourth two thousand for demo purposes. "
+        "How may I help you today,"
     )
 
     assert decision.kind.value == "correct_and_state_objective"
