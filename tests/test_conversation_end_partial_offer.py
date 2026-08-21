@@ -68,7 +68,7 @@ def make_session(
     )
 
 
-def test_goodbye_ends_conversation_without_completing_objective() -> None:
+def test_goodbye_before_objective_completion_does_not_end_conversation() -> None:
     session = make_session(
         TurnMeaning(
             conversation_end_requested=True,
@@ -78,8 +78,13 @@ def test_goodbye_ends_conversation_without_completing_objective() -> None:
     result = session.handle_agent_turn("Okay, bye.")
 
     assert result.meaning.conversation_end_requested is True
-    assert result.decision.kind is CommunicationKind.END_CONVERSATION
-    assert result.patient_text == ("Okay, thank you. Bye.")
+    assert result.decision.kind is CommunicationKind.DECLINE_WORKFLOW
+    assert not result.progress.booking_confirmed
+    assert not result.progress.objective_complete
+    assert not session.state.objective_complete
+    # A premature goodbye must not make the simulated patient
+    # reciprocate with the old terminal goodbye response.
+    assert result.patient_text != "Okay, thank you. Bye."
     assert result.progress.objective_complete is False
 
 

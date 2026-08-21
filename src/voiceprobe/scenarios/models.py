@@ -27,6 +27,15 @@ class PatientFacts(BaseModel):
     complaint: str = Field(min_length=1)
     duration: str = Field(min_length=1)
 
+    # Extensible caller-persona fields discovered from real target-agent
+    # dialogue. These remain authoritative scenario truth, not model memory.
+    first_name: str | None = None
+    last_name: str | None = None
+    patient_status: str | None = None
+    visited_before: bool | None = None
+    appointment_type: str | None = None
+    provider_preference: str | None = None
+
     date_of_birth: str | None = None
     insurance: str | None = None
     preferred_day: str | None = None
@@ -36,6 +45,11 @@ class PatientFacts(BaseModel):
         "name",
         "complaint",
         "duration",
+        "first_name",
+        "last_name",
+        "patient_status",
+        "appointment_type",
+        "provider_preference",
         "date_of_birth",
         "insurance",
         "preferred_day",

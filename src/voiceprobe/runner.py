@@ -43,12 +43,49 @@ class AssessmentCallRequest:
 
 @dataclass(frozen=True, slots=True)
 class AssessmentCallResult:
-    """Evidence returned after one complete call attempt."""
+    """Evidence returned after one complete call attempt.
+
+    Transport completion is not automatically assessment success. A remote
+    system can terminate a perfectly valid phone call before the scenario
+    objective has been achieved.
+    """
 
     provider_call_id: str
     artifact_run_id: str
     duration_seconds: float
     provider_cost_usd: Decimal | None = None
+    assessment_succeeded: bool = True
+    failure_reason: str | None = None
+
+
+def _assessment_failure_error(
+    *,
+    result: AssessmentCallResult,
+    artifact_run_id: str,
+) -> str | None:
+    """Return ledger-safe failure evidence for an unsuccessful assessment."""
+    if type(result.assessment_succeeded) is not bool:
+        raise TypeError("assessment_succeeded must be a boolean.")
+
+    if result.assessment_succeeded:
+        return None
+
+    failure_reason = " ".join(
+        (result.failure_reason or "").split()
+    )
+
+    if not failure_reason:
+        raise CallExecutionError(
+            "Unsuccessful assessment result requires a failure reason."
+        )
+
+    # Keep the evidence in the legacy error text for backwards-compatible
+    # diagnostics while also storing it structurally on the failed ledger entry.
+    return (
+        f"{failure_reason} "
+        f"[artifact_run_id={artifact_run_id}; "
+        f"duration_seconds={result.duration_seconds!r}]"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,12 +167,26 @@ def run_authorized_suite(
                     "Call adapter returned an empty artifact run ID."
                 )
 
-            ledger.complete_call(
-                position,
-                duration_seconds=(result.duration_seconds),
+            failure_error = _assessment_failure_error(
+                result=result,
                 artifact_run_id=artifact_run_id,
-                provider_call_id=provider_call_id,
             )
+
+            if failure_error is None:
+                ledger.complete_call(
+                    position,
+                    duration_seconds=(result.duration_seconds),
+                    artifact_run_id=artifact_run_id,
+                    provider_call_id=provider_call_id,
+                )
+            else:
+                ledger.fail_call(
+                    position,
+                    error=failure_error,
+                    provider_call_id=provider_call_id,
+                    artifact_run_id=artifact_run_id,
+                    duration_seconds=(result.duration_seconds),
+                )
 
         except (
             CallExecutionError,
@@ -239,13 +290,29 @@ def run_persistent_authorized_suite(
                     "Call adapter returned an empty artifact run ID."
                 )
 
-            call_ledger.complete_call(
-                position,
-                duration_seconds=(result.duration_seconds),
+            failure_error = _assessment_failure_error(
+                result=result,
                 artifact_run_id=artifact_run_id,
-                provider_call_id=provider_call_id,
             )
 
+            if failure_error is None:
+                call_ledger.complete_call(
+                    position,
+                    duration_seconds=(result.duration_seconds),
+                    artifact_run_id=artifact_run_id,
+                    provider_call_id=provider_call_id,
+                )
+            else:
+                call_ledger.fail_call(
+                    position,
+                    error=failure_error,
+                    provider_call_id=provider_call_id,
+                    artifact_run_id=artifact_run_id,
+                    duration_seconds=(result.duration_seconds),
+                )
+
+            # A failed assessment can still have incurred a real provider
+            # charge, so reconcile cost independently of semantic success.
             if result.provider_cost_usd is not None:
                 budget_ledger.reconcile_call(
                     position,

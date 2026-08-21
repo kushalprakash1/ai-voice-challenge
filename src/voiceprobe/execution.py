@@ -15,6 +15,7 @@ from typing import Final
 from uuid import uuid4
 
 from voiceprobe.policy import CallPolicy
+from voiceprobe.policy import MAX_CALL_DURATION_SECONDS
 from voiceprobe.safety import validate_destination
 from voiceprobe.suite import AssessmentSuitePlan
 
@@ -161,7 +162,7 @@ def authorize_live_execution(
     if not 1 <= manifest.call_count <= manifest.max_suite_calls:
         raise ExecutionSafetyError("Manifest call count violates the suite limit.")
 
-    if not 1 <= manifest.max_call_duration_seconds <= 180:
+    if not 1 <= manifest.max_call_duration_seconds <= MAX_CALL_DURATION_SECONDS:
         raise ExecutionSafetyError("Manifest call-duration limit is unsafe.")
 
     return AuthorizedExecution(
@@ -307,6 +308,8 @@ class CallLedger:
         *,
         error: str,
         provider_call_id: str | None = None,
+        artifact_run_id: str | None = None,
+        duration_seconds: float | None = None,
     ) -> CallLedgerEntry:
         """Transition one active call to failed without automatic retry."""
         entry = self._require_started(position)
@@ -314,6 +317,37 @@ class CallLedger:
 
         if not normalized_error:
             raise CallLedgerError("Failed calls require an error description.")
+
+        normalized_artifact: str | None = None
+
+        if artifact_run_id is not None:
+            normalized_artifact = artifact_run_id.strip()
+
+            if not normalized_artifact:
+                raise CallLedgerError(
+                    "Failed call artifact run ID cannot be empty."
+                )
+
+        duration: float | None = None
+
+        if duration_seconds is not None:
+            if isinstance(duration_seconds, bool) or not isinstance(
+                duration_seconds,
+                (int, float),
+            ):
+                raise CallLedgerError(
+                    "Failed call duration must be numeric."
+                )
+
+            duration = float(duration_seconds)
+
+            # A failed call may exceed the requested maximum slightly while
+            # AudioSocket/recorder teardown completes, so unlike successful
+            # calls we require only a non-negative measured duration.
+            if duration < 0.0:
+                raise CallLedgerError(
+                    "Failed call duration cannot be negative."
+                )
 
         updated = replace(
             entry,
@@ -323,6 +357,8 @@ class CallLedger:
                 if provider_call_id is not None
                 else entry.provider_call_id
             ),
+            artifact_run_id=normalized_artifact,
+            duration_seconds=duration,
             error=normalized_error,
         )
 

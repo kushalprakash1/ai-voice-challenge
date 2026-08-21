@@ -90,7 +90,7 @@ def test_call_audio_preserves_real_timeline_silence(
     assert outbound_info.frames == 160
     assert inbound_info.frames == 160
 
-    # The submission-friendly OGG is independently decodable.
+    # The compressed OGG export is independently decodable.
     ogg_info = sf.info(tmp_path / "aligned-timeline" / "call.ogg")
 
     assert ogg_info.samplerate == (AUDIO_SAMPLE_RATE_HZ)

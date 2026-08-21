@@ -56,7 +56,7 @@ def test_wait_for_hangup_skips_unrelated_event_and_correlates() -> None:
         b"Cause-txt: Normal Clearing\r\n"
         b"\r\n"
         b"Event: Hangup\r\n"
-        b"Channel: Local/+18054398008@voiceprobe-test-00000001;1\r\n"
+        b"Channel: Local/+12025550100@voiceprobe-test-00000001;1\r\n"
         b"Uniqueid: 1786788695.112\r\n"
         b"Linkedid: 1786788695.112\r\n"
         b"Cause: 16\r\n"
@@ -80,11 +80,11 @@ def test_wait_for_hangup_skips_unrelated_event_and_correlates() -> None:
 
     result = client.wait_for_hangup(
         unique_id="1786788695.112",
-        channel=("Local/+18054398008@voiceprobe-test-00000001;1"),
+        channel=("Local/+12025550100@voiceprobe-test-00000001;1"),
     )
 
     assert result.unique_id == "1786788695.112"
-    assert result.channel == ("Local/+18054398008@voiceprobe-test-00000001;1")
+    assert result.channel == ("Local/+12025550100@voiceprobe-test-00000001;1")
     assert result.linked_id == "1786788695.112"
     assert result.cause == 16
     assert result.cause_text == "Normal Clearing"

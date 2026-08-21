@@ -15,8 +15,8 @@ from voiceprobe.scenarios.catalog import (
 )
 
 
-def test_catalog_contains_twelve_scenarios() -> None:
-    assert len(SCENARIOS) == 12
+def test_catalog_contains_sixteen_scenarios() -> None:
+    assert len(SCENARIOS) == 16
 
 
 def test_scenario_ids_are_unique() -> None:
@@ -32,6 +32,12 @@ def test_catalog_order_is_deterministic() -> None:
 
 def test_every_scenario_has_scheduling_truth() -> None:
     for scenario in SCENARIOS:
+        if scenario.scenario_id == "farthest-date-scheduling":
+            # Its truth is a LATEST selection policy, not a day/daypart
+            # compatibility constraint.
+            assert scenario.facts.preferred_day is None
+            assert scenario.facts.preferred_time is None
+            continue
         assert scenario.facts.preferred_day is not None
         assert scenario.facts.preferred_time is not None
 
@@ -60,6 +66,16 @@ def test_get_scenario_resolves_by_id() -> None:
     assert scenario.facts.name == "Daniel Kim"
     assert scenario.facts.preferred_day == "Monday"
     assert scenario.facts.preferred_time == "evening"
+
+
+def test_catalog_accepts_medication_refill_correction() -> None:
+    scenario = get_scenario("medication-refill-correction")
+    assert scenario.objective.startswith("Request a synthetic lisinopril refill")
+
+
+def test_catalog_accepts_self_pay_location_switch() -> None:
+    scenario = get_scenario("self-pay-location-switch")
+    assert "self-pay" in scenario.objective
 
 
 def test_unknown_scenario_is_rejected() -> None:

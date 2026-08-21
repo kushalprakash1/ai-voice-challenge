@@ -19,8 +19,8 @@ from voiceprobe.execution import (
     CallLedgerError,
     CallStatus,
 )
+from voiceprobe.policy import MAX_CALL_DURATION_SECONDS
 
-HARD_BUDGET_CEILING_USD: Final = Decimal("20.00")
 MONEY_RESERVATION_QUANTUM_USD: Final = Decimal("0.01")
 
 
@@ -311,10 +311,24 @@ class PersistentCallLedger:
                             "Failed persisted call is missing an error."
                         )
 
+                    artifact_run_id = _optional_text(
+                        entry.get("artifact_run_id"),
+                        name="artifact_run_id",
+                    )
+
+                    raw_duration = entry.get("duration_seconds")
+                    duration_seconds = (
+                        None
+                        if raw_duration is None
+                        else _require_duration(raw_duration)
+                    )
+
                     ledger.fail_call(
                         position,
                         error=error_text,
                         provider_call_id=(provider_call_id),
+                        artifact_run_id=(artifact_run_id),
+                        duration_seconds=(duration_seconds),
                     )
 
             except CallLedgerError as error:
@@ -388,11 +402,15 @@ class PersistentCallLedger:
         *,
         error: str,
         provider_call_id: str | None = None,
+        artifact_run_id: str | None = None,
+        duration_seconds: float | None = None,
     ) -> CallLedgerEntry:
         entry = self._ledger.fail_call(
             position,
             error=error,
             provider_call_id=(provider_call_id),
+            artifact_run_id=(artifact_run_id),
+            duration_seconds=(duration_seconds),
         )
 
         self._persist()
@@ -444,7 +462,7 @@ class BudgetPolicy:
     max_provider_rate_per_minute_usd: Decimal
 
     def __post_init__(self) -> None:
-        budget = _validate_money(
+        _validate_money(
             self.total_budget_usd,
             name="total_budget_usd",
             allow_zero=False,
@@ -456,8 +474,6 @@ class BudgetPolicy:
             allow_zero=False,
         )
 
-        if budget >= HARD_BUDGET_CEILING_USD:
-            raise BudgetStateError("Assessment budget must remain below $20.00.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -541,10 +557,10 @@ class BudgetLedger:
                 max_duration_seconds,
                 int,
             )
-            or not 1 <= max_duration_seconds <= 180
+            or not 1 <= max_duration_seconds <= MAX_CALL_DURATION_SECONDS
         ):
             raise BudgetStateError(
-                "Maximum call duration must be an integer between 1 and 180 seconds."
+                f"Maximum call duration must be an integer between 1 and {MAX_CALL_DURATION_SECONDS} seconds."
             )
 
         seconds = Decimal(max_duration_seconds)

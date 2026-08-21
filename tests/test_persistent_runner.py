@@ -23,7 +23,7 @@ from voiceprobe.runner import (
 from voiceprobe.scenarios.catalog import list_scenarios
 from voiceprobe.suite import build_suite_plan
 
-ORIGINATING_NUMBER = "+14155551212"
+ORIGINATING_NUMBER = "+12025550101"
 
 
 def authorization(

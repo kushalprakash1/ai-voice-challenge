@@ -15,13 +15,13 @@ from voiceprobe.suite import (
     build_suite_plan,
 )
 
-ORIGINATING_NUMBER = "+14155551212"
+ORIGINATING_NUMBER = "+12025550101"
 
 
 def build_policy(
     *,
     dry_run: bool = True,
-    max_suite_calls: int = 15,
+    max_suite_calls: int = 16,
     max_call_duration_seconds: int = 180,
 ) -> CallPolicy:
     return CallPolicy(
@@ -38,10 +38,10 @@ def test_default_suite_contains_entire_catalog() -> None:
     assert tuple(call.scenario_id for call in plan.calls) == scenario_ids()
 
 
-def test_default_suite_contains_twelve_calls() -> None:
+def test_default_suite_contains_sixteen_calls() -> None:
     plan = build_suite_plan(build_policy())
 
-    assert plan.call_count == 12
+    assert plan.call_count == 16
 
 
 def test_suite_reuses_hardcoded_destination() -> None:
@@ -66,8 +66,8 @@ def test_suite_concurrency_is_one() -> None:
 def test_suite_worst_case_duration_is_deterministic() -> None:
     plan = build_suite_plan(build_policy())
 
-    assert plan.worst_case_duration_seconds == 12 * 180
-    assert plan.worst_case_duration_minutes == 36.0
+    assert plan.worst_case_duration_seconds == 16 * 180
+    assert plan.worst_case_duration_minutes == 48.0
 
 
 def test_suite_plan_is_never_live_executable() -> None:

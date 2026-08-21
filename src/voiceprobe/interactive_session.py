@@ -27,8 +27,8 @@ from voiceprobe.scenarios.models import (
     PatientFacts,
     PatientScenario,
 )
-from voiceprobe.verbalizers.ollama import (
-    OllamaNaturalVerbalizer,
+from voiceprobe.verbalizers.deterministic import (
+    DeterministicNaturalVerbalizer,
 )
 
 DEFAULT_MODEL = "qwen3:14b"
@@ -215,7 +215,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             client=client,
         )
 
-        verbalizer = OllamaNaturalVerbalizer(
+        verbalizer = DeterministicNaturalVerbalizer(
             model=args.model,
             url=args.url,
             client=client,

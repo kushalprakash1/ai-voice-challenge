@@ -1,7 +1,7 @@
 """Crash-resilient private artifacts for one VoiceProbe call.
 
 Raw development artifacts live under artifacts/, which is intentionally
-gitignored. Public challenge evidence is exported separately after review.
+gitignored. Selected fixtures can be reviewed and added deliberately.
 """
 
 from __future__ import annotations

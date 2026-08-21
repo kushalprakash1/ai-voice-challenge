@@ -1,4 +1,4 @@
-"""Explicit one-call production entrypoint for PGAI assessment testing.
+"""Explicit one-call production entrypoint for VoiceProbe testing.
 
 This module can authorize exactly one immutable patient scenario. It cannot
 reuse or execute a multi-call suite manifest.
@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict
+import os
+from dataclasses import asdict, replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -21,116 +22,30 @@ from voiceprobe.execution import (
     write_execution_manifest,
 )
 from voiceprobe.execution_state import (
-    HARD_BUDGET_CEILING_USD,
-    BudgetLedger,
     BudgetPolicy,
-    BudgetStateError,
     PersistentBudgetLedger,
     PersistentCallLedger,
 )
+from voiceprobe.policy import (
+    DEFAULT_MAX_CALL_DURATION_SECONDS,
+    MAX_CALL_DURATION_SECONDS,
+)
 from voiceprobe.runner import run_persistent_authorized_suite
+from voiceprobe.safety import require_live_destination
 from voiceprobe.scenarios.catalog import get_scenario, list_scenarios
 from voiceprobe.suite import build_suite_plan
 from voiceprobe.telephony.ami import AsteriskAMIConfig
 from voiceprobe.telephony.asterisk_adapter import AsteriskAssessmentCallAdapter
+from voiceprobe.v3.personas import (
+    ENV_PERSONA,
+    ENV_PERSONA_SEED,
+    ENV_PERSONA_SEQUENCE,
+    list_personas,
+    sequence_ids_for,
+)
 
 DEFAULT_AMI_ENV = Path.home() / ".config/voiceprobe/ami.env"
 DEFAULT_MAX_PROVIDER_RATE_PER_MINUTE_USD = Decimal("0.10")
-
-
-def _decimal_from_budget_value(
-    value: object,
-    *,
-    name: str,
-    path: Path,
-) -> Decimal:
-    """Parse one persisted monetary value without silently ignoring damage."""
-    if not isinstance(value, str):
-        raise BudgetStateError(f"{path}: {name} must be stored as a decimal string.")
-
-    try:
-        amount = Decimal(value)
-    except Exception as error:
-        raise BudgetStateError(f"{path}: {name} is not a valid decimal.") from error
-
-    if not amount.is_finite() or amount < 0:
-        raise BudgetStateError(f"{path}: {name} must be a finite non-negative amount.")
-
-    return amount
-
-
-def cumulative_assessment_commitment(
-    executions_root: Path,
-) -> Decimal:
-    """Sum every persisted assessment reservation/actual cost across runs.
-
-    Actual provider cost replaces the conservative reservation when known.
-    A malformed historical ledger is treated as a safety failure rather than
-    being ignored.
-    """
-    total = Decimal(0)
-
-    if not executions_root.exists():
-        return total
-
-    for budget_path in sorted(executions_root.glob("*/budget.json")):
-        try:
-            payload = json.loads(budget_path.read_text(encoding="utf-8"))
-        except Exception as error:
-            raise BudgetStateError(
-                f"Unable to read historical budget ledger: {budget_path}"
-            ) from error
-
-        if not isinstance(payload, dict):
-            raise BudgetStateError(
-                f"{budget_path}: budget ledger must contain an object."
-            )
-
-        entries = payload.get("entries")
-
-        if not isinstance(entries, list):
-            raise BudgetStateError(
-                f"{budget_path}: budget entries must contain a list."
-            )
-
-        for entry in entries:
-            if not isinstance(entry, dict):
-                raise BudgetStateError(
-                    f"{budget_path}: budget entry must contain an object."
-                )
-
-            actual = entry.get("actual_usd")
-
-            if actual is not None:
-                total += _decimal_from_budget_value(
-                    actual,
-                    name="actual_usd",
-                    path=budget_path,
-                )
-                continue
-
-            total += _decimal_from_budget_value(
-                entry.get("reserved_usd"),
-                name="reserved_usd",
-                path=budget_path,
-            )
-
-    return total
-
-
-def enforce_cumulative_budget(
-    *,
-    prior_commitment_usd: Decimal,
-    next_call_reservation_usd: Decimal,
-) -> None:
-    """Block a call whose worst-case reservation could cross the hard cap."""
-    projected = prior_commitment_usd + next_call_reservation_usd
-
-    if projected >= HARD_BUDGET_CEILING_USD:
-        raise BudgetStateError(
-            "Starting this assessment call could reach or exceed the "
-            "$20 cumulative challenge budget ceiling."
-        )
 
 
 def _required_env_value(
@@ -171,9 +86,30 @@ def prepare_one_call(
     *,
     settings: Settings,
     scenario_id: str,
+    live_requested: bool = False,
+    max_call_duration_seconds: int | None = None,
 ):
-    """Create a fresh execution manifest containing exactly one scenario."""
-    policy = settings.call_policy()
+    """Create a fresh execution manifest containing exactly one scenario.
+
+    The CLI's explicit --live request controls whether the prepared manifest
+    is live-capable. Authorization still independently requires the live flag
+    and exact confirmation token before any dialing side effect is allowed.
+    """
+    if type(live_requested) is not bool:
+        raise TypeError("live_requested must be a boolean.")
+
+    base_policy = settings.call_policy()
+
+    policy = replace(
+        base_policy,
+        dry_run=not live_requested,
+        max_call_duration_seconds=(
+            base_policy.max_call_duration_seconds
+            if max_call_duration_seconds is None
+            else max_call_duration_seconds
+        ),
+    )
+
     scenario = get_scenario(scenario_id)
 
     suite = build_suite_plan(
@@ -195,9 +131,15 @@ def prepare_one_call(
     return manifest
 
 
-def main() -> None:
+def _execution_exit_code(failed_count: int) -> int:
+    """Map suite outcome to a conventional CLI process status."""
+
+    return 1 if failed_count > 0 else 0
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Execute exactly one authorized PGAI assessment call.",
+        description="Execute exactly one authorized VoiceProbe call.",
     )
 
     parser.add_argument(
@@ -213,15 +155,61 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--live-monitor",
+        action="store_true",
+        help=(
+            "Listen locally to both sides of the live call through ffplay. "
+            "Monitoring uses one local mixed stream and is non-blocking; "
+            "it never enters the call-critical media path."
+        ),
+    )
+
+
+    parser.add_argument(
+        "--persona",
+        choices=tuple(
+            persona.persona_id
+            for persona in list_personas()
+            if persona.persona_id != "control"
+        ),
+        default="",
+        help="Optional adversarial patient persona.",
+    )
+
+    parser.add_argument(
+        "--persona-sequence",
+        default="",
+        help="Explicit deterministic move sequence for --persona.",
+    )
+
+    parser.add_argument(
+        "--persona-seed",
+        type=int,
+        default=6,
+        help="Seed used when no explicit persona sequence is selected.",
+    )
+
+    parser.add_argument(
         "--confirm",
         default="",
         help="Exact live confirmation token.",
     )
 
     parser.add_argument(
+        "--max-call-duration-seconds",
+        type=int,
+        default=DEFAULT_MAX_CALL_DURATION_SECONDS,
+        help=(
+            "Maximum duration for this one call in seconds. "
+            f"Default is {DEFAULT_MAX_CALL_DURATION_SECONDS}; "
+            f"hard maximum is {MAX_CALL_DURATION_SECONDS}."
+        ),
+    )
+
+    parser.add_argument(
         "--budget-usd",
         default="5.00",
-        help="Execution budget ceiling; must remain below $20.",
+        help="Budget ceiling for this one-call execution.",
     )
 
     parser.add_argument(
@@ -238,16 +226,70 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if args.live_monitor and not args.live:
+        parser.error("--live-monitor requires --live")
+
+    if args.persona_sequence and not args.persona:
+        parser.error("--persona-sequence requires --persona")
+
+    if args.persona:
+        available_sequences = sequence_ids_for(args.persona)
+
+        if (
+            args.persona_sequence
+            and args.persona_sequence not in available_sequences
+        ):
+            parser.error(
+                f"invalid --persona-sequence for {args.persona!r}; "
+                f"choices are: {', '.join(available_sequences)}"
+            )
+
+    # Prevent stale shell variables from silently modifying a baseline call.
+    os.environ[ENV_PERSONA] = args.persona
+    os.environ[ENV_PERSONA_SEQUENCE] = args.persona_sequence
+    os.environ[ENV_PERSONA_SEED] = str(args.persona_seed)
+
+    # Keep monitoring explicitly opt-in for run_one. The actual media layer
+    # reads this flag independently so the known-good adapter call signatures
+    # and safety/budget plumbing remain unchanged.
+    os.environ["VOICEPROBE_LIVE_MONITOR"] = (
+        "1" if args.live_monitor else "0"
+    )
+    os.environ["VOICEPROBE_SCENARIO"] = args.scenario
+
     settings = Settings()  # type: ignore[call-arg]
 
     manifest = prepare_one_call(
         settings=settings,
         scenario_id=args.scenario,
+        live_requested=args.live,
+        max_call_duration_seconds=(
+            args.max_call_duration_seconds
+        ),
     )
 
     # Persist evidence of exactly what is about to cross the live boundary.
     manifest_path = write_execution_manifest(manifest)
     execution_dir = manifest_path.parent
+
+    if not args.live:
+        print(
+            json.dumps(
+                {
+                    "execution_id": manifest.execution_id,
+                    "manifest_path": str(manifest_path),
+                    "call_count": manifest.call_count,
+                    "scenario_id": args.scenario,
+                    "dry_run": True,
+                    "telephony_enabled": False,
+                    "provider_call_invoked": False,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    require_live_destination()
 
     authorization = authorize_live_execution(
         manifest,
@@ -258,20 +300,6 @@ def main() -> None:
     budget_policy = BudgetPolicy(
         total_budget_usd=Decimal(args.budget_usd),
         max_provider_rate_per_minute_usd=Decimal(args.max_rate_per_minute_usd),
-    )
-
-    # Each run_one execution owns its own atomic ledger, but the challenge
-    # budget applies across every real assessment call. Scan historical
-    # execution ledgers before allowing the next reservation.
-    prior_commitment_usd = cumulative_assessment_commitment(execution_dir.parent)
-
-    next_reservation = BudgetLedger(budget_policy).worst_case_call_cost(
-        manifest.max_call_duration_seconds
-    )
-
-    enforce_cumulative_budget(
-        prior_commitment_usd=prior_commitment_usd,
-        next_call_reservation_usd=next_reservation,
     )
 
     call_ledger = PersistentCallLedger.initialize(
@@ -310,8 +338,6 @@ def main() -> None:
                 "call_count": manifest.call_count,
                 "scenario_id": args.scenario,
                 "destination": manifest.destination,
-                "prior_cumulative_commitment_usd": (prior_commitment_usd),
-                "next_call_reserved_usd": (next_reservation),
                 "entries": [asdict(entry) for entry in result.entries],
             },
             indent=2,
@@ -319,6 +345,8 @@ def main() -> None:
         )
     )
 
+    return _execution_exit_code(result.failed_count)
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

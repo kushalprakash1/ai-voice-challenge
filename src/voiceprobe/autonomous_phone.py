@@ -33,6 +33,10 @@ from voiceprobe.artifacts.recorder import RunArtifactRecorder
 from voiceprobe.conversation.session import PatientSession
 from voiceprobe.conversation.turns import CompletedTurn
 from voiceprobe.interpreters.ollama import OllamaConversationInterpreter
+from voiceprobe.reasoning.session_v2 import (
+    ReasoningV2PatientSession,
+    reasoning_v2_enabled_from_environment,
+)
 from voiceprobe.media.live_asr import (
     AUDIO_SAMPLE_RATE_HZ,
     TYPE_DTMF,
@@ -50,6 +54,7 @@ from voiceprobe.scenarios.catalog import (
 )
 from voiceprobe.scenarios.models import PatientScenario
 from voiceprobe.tts.telephony import (
+    FRAME_BYTES,
     FRAME_DURATION_SECONDS,
     build_audiosocket_packet,
     build_audiosocket_terminate_packet,
@@ -64,11 +69,76 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9019
 
 DEFAULT_MODEL = "qwen3:14b"
-DEFAULT_OLLAMA_URL = "http://10.0.0.219:11434/api/chat"
+DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
 
 DEFAULT_VOICE = "af_heart"
 
 ECHO_GUARD_SECONDS = 0.35
+
+
+# High-frequency responses produced verbatim by the deterministic
+# verbalizer. These are rendered to telephony-ready PCM before dialing
+# so time-critical replies do not wait for Kokoro inference.
+PRE_RENDERED_TTS_TEXTS = (
+    "No, I need an appointment.",
+    "I need to schedule an appointment for Friday afternoon.",
+    "Yes, please.",
+    "Yes, that works.",
+    "Could you repeat that?",
+    "Okay, thank you. Bye.",
+    'Alex.',
+    'Morgan.',
+    'April 12, 1998.',
+    'Blue Cross.',
+    'Friday afternoon.',
+    'I need a new patient consultation.',
+    "I'm a new patient.",
+    "No, I haven't visited before.",
+    "I'm a new patient. No, I haven't visited before.",
+    "I don't have a preference. Any available provider is fine.",
+    'No, I need Friday afternoon.',
+)
+
+
+def build_runtime_patient_session(
+    *,
+    scenario: PatientScenario,
+    model: str,
+    url: str,
+    client: httpx.Client,
+) -> PatientSession | ReasoningV2PatientSession:
+    """Build the reasoning implementation selected for this process.
+
+    Legacy PatientSession remains the default. Reasoning v2 must be
+    explicitly enabled with VOICEPROBE_REASONING_V2=1.
+    """
+
+    if reasoning_v2_enabled_from_environment():
+        return ReasoningV2PatientSession(
+            scenario=scenario,
+            model=model,
+            url=url,
+            client=client,
+        )
+
+    interpreter = OllamaConversationInterpreter(
+        model=model,
+        url=url,
+        client=client,
+    )
+
+    verbalizer = OllamaNaturalVerbalizer(
+        model=model,
+        url=url,
+        client=client,
+    )
+
+    return PatientSession(
+        scenario=scenario,
+        interpreter=interpreter,
+        verbalizer=verbalizer,
+        brain=PatientBrain(),
+    )
 
 
 def build_scenario(
@@ -105,6 +175,38 @@ def synthesize(
     return np.concatenate(pieces)
 
 
+def build_pre_rendered_tts_cache(
+    *,
+    pipeline: KPipeline,
+    voice: str,
+    texts: tuple[str, ...] = PRE_RENDERED_TTS_TEXTS,
+) -> dict[str, bytes]:
+    """Render fixed deterministic responses to 8 kHz PCM16 before dialing.
+
+    Cache keys use the exact normalized text that process_turns sends to
+    Kokoro. A missing entry is always safe because the live path falls back
+    to ordinary synthesis.
+    """
+    cache: dict[str, bytes] = {}
+
+    for patient_text in texts:
+        tts_text = normalize_text_for_tts(patient_text)
+
+        if tts_text in cache:
+            continue
+
+        audio_24k = synthesize(
+            pipeline=pipeline,
+            voice=voice,
+            text=tts_text,
+        )
+
+        audio_8k = resample_to_telephony(audio_24k)
+        cache[tts_text] = float_audio_to_pcm16(audio_8k)
+
+    return cache
+
+
 def send_audio(
     connection: socket.socket,
     pcm16: bytes,
@@ -128,6 +230,92 @@ def send_audio(
 
         if delay > 0:
             time.sleep(delay)
+
+
+# CONTINUOUS AUDIOSOCKET IDLE SILENCE
+#
+# Asterisk's rtp_keepalive sends sparse comfort-noise packets when the
+# application provides no outbound AudioSocket PCM. Real calls repeatedly
+# terminated about 15-16 seconds after VoiceProbe's final spoken PCM frame.
+#
+# Keep the media leg continuously active by supplying correctly framed,
+# real-time-paced PCM16 silence while VoiceProbe is listening. Speech and
+# silence share one lock so silence can never be interleaved into TTS audio.
+def send_audio_synchronized(
+    connection: socket.socket,
+    pcm16: bytes,
+    *,
+    send_lock: threading.Lock | None = None,
+    recorder: RunArtifactRecorder | None = None,
+) -> None:
+    """Send patient speech without interleaving idle-silence frames."""
+
+    if send_lock is None:
+        send_audio(
+            connection,
+            pcm16,
+            recorder=recorder,
+        )
+        return
+
+    with send_lock:
+        send_audio(
+            connection,
+            pcm16,
+            recorder=recorder,
+        )
+
+
+def send_idle_silence(
+    connection: socket.socket,
+    *,
+    stop: threading.Event,
+    send_lock: threading.Lock,
+) -> None:
+    """Continuously send 20 ms PCM16 silence until the call stops.
+
+    The sender is paced against monotonic time and shares the exact same
+    output lock as patient speech. It therefore maintains ordinary outbound
+    AudioSocket media while listening without mixing silence into TTS.
+    """
+
+    silence_frame = bytes(FRAME_BYTES)
+    silence_packet = build_audiosocket_packet(
+        silence_frame
+    )
+
+    next_deadline = time.monotonic()
+
+    while not stop.is_set():
+
+        with send_lock:
+
+            # The call may have ended while this thread was waiting for
+            # patient speech to release the output lock.
+            if stop.is_set():
+                return
+
+            try:
+                connection.sendall(
+                    silence_packet
+                )
+            except OSError:
+                return
+
+        next_deadline += FRAME_DURATION_SECONDS
+
+        delay = (
+            next_deadline
+            - time.monotonic()
+        )
+
+        if delay > 0:
+            if stop.wait(delay):
+                return
+        else:
+            # Never "catch up" by flooding stale silence frames if the
+            # scheduler temporarily stalls.
+            next_deadline = time.monotonic()
 
 
 def terminate_audiosocket_connection(
@@ -155,6 +343,290 @@ def terminate_audiosocket_connection(
     return packet_sent
 
 
+def queue_completed_turn(
+    *,
+    turn: CompletedTurn,
+    turns: queue.Queue[CompletedTurn | None],
+    busy: threading.Event,
+    stop: threading.Event,
+) -> str:
+    # Queue one finalized remote-agent turn without dropping it.
+
+    if stop.is_set():
+        return "stopped"
+
+    disposition = (
+        "buffered"
+        if busy.is_set()
+        else "queued"
+    )
+
+    # Claim the response window before publishing the item so speculative
+    # prefetch cannot race a newly finalized turn.
+    busy.set()
+    turns.put_nowait(turn)
+
+    return disposition
+
+
+def should_forward_inbound_audio(
+    *,
+    playback_active: threading.Event,
+) -> bool:
+    # Reasoning/TTS preparation must not stop listening. Only actual patient
+    # playback plus the echo guard mutes Moonshine.
+    return not playback_active.is_set()
+
+
+_FRAGMENT_MERGE_WINDOW_SECONDS = 4.0
+
+_FRAGMENT_TRAILING_WORDS = frozenset(
+    {
+        "a",
+        "about",
+        "an",
+        "and",
+        "any",
+        "at",
+        "because",
+        "but",
+        "for",
+        "from",
+        "if",
+        "in",
+        "of",
+        "on",
+        "or",
+        "our",
+        "so",
+        "the",
+        "their",
+        "to",
+        "with",
+        "your",
+    }
+)
+
+_FRAGMENT_AUXILIARY_STARTERS = frozenset(
+    {
+        "are",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "has",
+        "have",
+        "is",
+        "should",
+        "was",
+        "were",
+        "will",
+        "would",
+    }
+)
+
+_CONTINUATION_STARTERS = frozenset(
+    {
+        "a",
+        "an",
+        "any",
+        "at",
+        "for",
+        "from",
+        "in",
+        "of",
+        "on",
+        "or",
+        "the",
+        "these",
+        "this",
+        "those",
+        "to",
+        "with",
+        "you",
+        "your",
+    }
+)
+
+
+def _normalized_tokens(text: str) -> tuple[str, ...]:
+    normalized = " ".join(text.split())
+
+    if not normalized:
+        return ()
+
+    return tuple(
+        token.casefold().strip("'\\\"()[]{}?!.,:;…—-")
+        for token in normalized.split()
+        if token.strip("'\\\"()[]{}?!.,:;…—-")
+    )
+
+
+def is_incomplete_turn_fragment(text: str) -> bool:
+    # Detect only obvious ASR truncations that are unsafe to reason over.
+
+    normalized = " ".join(text.split())
+
+    if not normalized:
+        return True
+
+    if normalized.endswith(("...", "…", ",", "-", "—", ":")):
+        return True
+
+    tokens = _normalized_tokens(normalized)
+
+    if not tokens:
+        return True
+
+    if tokens[-1] in _FRAGMENT_TRAILING_WORDS:
+        return True
+
+    if (
+        len(tokens) <= 3
+        and tokens[0] in _FRAGMENT_AUXILIARY_STARTERS
+        and not normalized.endswith(("?", ".", "!"))
+    ):
+        return True
+
+    return False
+
+
+def _looks_like_continuation(
+    pending: CompletedTurn,
+    following: CompletedTurn,
+) -> bool:
+    gap_seconds = max(
+        0.0,
+        following.started_at - pending.completed_at,
+    )
+
+    if gap_seconds > _FRAGMENT_MERGE_WINDOW_SECONDS:
+        return False
+
+    pending_tokens = _normalized_tokens(pending.text)
+    following_tokens = _normalized_tokens(following.text)
+
+    if not pending_tokens or not following_tokens:
+        return False
+
+    if following_tokens[0] in _CONTINUATION_STARTERS:
+        return True
+
+    # Do not infer continuation solely from the held fragment's final token.
+    # "Would any..." followed by the independent sentence
+    # "There are no Friday afternoon openings." must not merge.
+    return False
+
+
+def merge_completed_turns(
+    first: CompletedTurn,
+    second: CompletedTurn,
+) -> CompletedTurn:
+    first_text = first.text.rstrip()
+
+    if first_text.endswith("..."):
+        first_text = first_text[:-3].rstrip()
+    elif first_text.endswith("…"):
+        first_text = first_text[:-1].rstrip()
+
+    merged_text = " ".join(
+        part
+        for part in (
+            first_text,
+            second.text.strip(),
+        )
+        if part
+    )
+
+    return CompletedTurn(
+        text=merged_text,
+        lines=first.lines + second.lines,
+        started_at=first.started_at,
+        completed_at=second.completed_at,
+    )
+
+
+class IncompleteTurnBuffer:
+    def __init__(
+        self,
+        *,
+        merge_window_seconds: float = _FRAGMENT_MERGE_WINDOW_SECONDS,
+    ) -> None:
+        if merge_window_seconds <= 0:
+            raise ValueError(
+                "merge_window_seconds must be greater than zero."
+            )
+
+        self.merge_window_seconds = merge_window_seconds
+        self._pending: CompletedTurn | None = None
+        self._lock = threading.Lock()
+
+    def ingest(
+        self,
+        turn: CompletedTurn,
+    ) -> tuple[CompletedTurn | None, str, CompletedTurn | None]:
+        # Return (actionable_turn, disposition, discarded_fragment).
+
+        with self._lock:
+            if is_incomplete_turn_fragment(turn.text):
+                discarded: CompletedTurn | None = None
+
+                if self._pending is not None:
+                    gap_seconds = max(
+                        0.0,
+                        turn.started_at - self._pending.completed_at,
+                    )
+
+                    if gap_seconds <= self.merge_window_seconds:
+                        self._pending = merge_completed_turns(
+                            self._pending,
+                            turn,
+                        )
+                    else:
+                        discarded = self._pending
+                        self._pending = turn
+                else:
+                    self._pending = turn
+
+                return None, "held_fragment", discarded
+
+            if self._pending is None:
+                return turn, "ready", None
+
+            pending = self._pending
+            self._pending = None
+
+            gap_seconds = max(
+                0.0,
+                turn.started_at - pending.completed_at,
+            )
+
+            if (
+                gap_seconds <= self.merge_window_seconds
+                and _looks_like_continuation(
+                    pending,
+                    turn,
+                )
+            ):
+                return (
+                    merge_completed_turns(
+                        pending,
+                        turn,
+                    ),
+                    "merged_fragment",
+                    None,
+                )
+
+            return turn, "fragment_discarded", pending
+
+    def take_pending(self) -> CompletedTurn | None:
+        with self._lock:
+            pending = self._pending
+            self._pending = None
+            return pending
+
+
 def process_turns(
     *,
     turns: queue.Queue[CompletedTurn | None],
@@ -165,8 +637,18 @@ def process_turns(
     busy: threading.Event,
     stop: threading.Event,
     recorder: RunArtifactRecorder,
+    playback_active: threading.Event | None = None,
+    audiosocket_send_lock: threading.Lock | None = None,
+    tts_pcm_cache: dict[str, bytes] | None = None,
 ) -> None:
     """Process complete ASR turns sequentially."""
+
+    # Keep the public worker contract backward compatible for existing tests
+    # and callers. Production handle_call passes a shared event explicitly;
+    # direct callers get a private event with identical behavior.
+    if playback_active is None:
+        playback_active = threading.Event()
+
     while True:
         turn = turns.get()
 
@@ -176,6 +658,10 @@ def process_turns(
 
             if stop.is_set():
                 return
+
+            # A buffered item may begin immediately after the prior turn
+            # clears busy in its finally block.
+            busy.set()
 
             print()
             print("=" * 72)
@@ -288,19 +774,41 @@ def process_turns(
                     flush=True,
                 )
 
-            audio_24k = synthesize(
-                pipeline=pipeline,
-                voice=voice,
-                text=tts_text,
+            cached_pcm16 = (
+                tts_pcm_cache.get(tts_text)
+                if tts_pcm_cache is not None
+                else None
             )
 
-            tts_seconds = perf_counter() - tts_started
+            if cached_pcm16 is not None:
+                pcm16 = cached_pcm16
+                tts_seconds = 0.0
+                audio_seconds = len(pcm16) / (8_000 * 2)
 
-            audio_8k = resample_to_telephony(audio_24k)
+                recorder.record_event(
+                    "tts_cache_hit",
+                    tts_text=tts_text,
+                    pcm16_bytes=len(pcm16),
+                )
+            else:
+                audio_24k = synthesize(
+                    pipeline=pipeline,
+                    voice=voice,
+                    text=tts_text,
+                )
 
-            pcm16 = float_audio_to_pcm16(audio_8k)
+                tts_seconds = perf_counter() - tts_started
 
-            audio_seconds = len(audio_8k) / 8_000
+                audio_8k = resample_to_telephony(audio_24k)
+
+                pcm16 = float_audio_to_pcm16(audio_8k)
+
+                audio_seconds = len(audio_8k) / 8_000
+
+                recorder.record_event(
+                    "tts_cache_miss",
+                    tts_text=tts_text,
+                )
 
             response_prep_seconds = time.monotonic() - turn.completed_at
 
@@ -363,11 +871,15 @@ def process_turns(
                 tts_text=tts_text,
             )
 
+            # Half-duplex is scoped to actual patient audio, not reasoning.
+            playback_active.set()
+
             print("Speaking...")
 
-            send_audio(
+            send_audio_synchronized(
                 connection,
                 pcm16,
+                send_lock=audiosocket_send_lock,
                 recorder=recorder,
             )
 
@@ -415,6 +927,7 @@ def process_turns(
             # Keep inbound ASR muted briefly after ordinary playback so PSTN
             # echo does not immediately become the next receptionist turn.
             time.sleep(ECHO_GUARD_SECONDS)
+            playback_active.clear()
 
         except (
             httpx.HTTPError,
@@ -435,6 +948,10 @@ def process_turns(
             print(f"TURN ERROR: {type(error).__name__}: {error}")
 
         finally:
+            # Never leave the receive loop permanently muted after a failed
+            # playback, local hangup, or worker exception.
+            playback_active.clear()
+
             if turn is not None:
                 busy.clear()
 
@@ -448,12 +965,22 @@ def handle_call(
     pipeline: KPipeline,
     voice: str,
     recorder: RunArtifactRecorder,
+    tts_pcm_cache: dict[str, bytes] | None = None,
 ) -> uuid.UUID | None:
     """Run one autonomous half-duplex AudioSocket call."""
     turn_queue: queue.Queue[CompletedTurn | None] = queue.Queue()
 
     busy = threading.Event()
+    playback_active = threading.Event()
     stop = threading.Event()
+    incomplete_turn_buffer = IncompleteTurnBuffer()
+
+    # Speech and idle-silence media must never write to AudioSocket
+    # concurrently.
+    audiosocket_send_lock = threading.Lock()
+
+    # Start only after Asterisk has supplied the AudioSocket UUID.
+    idle_silence_thread: threading.Thread | None = None
 
     def prefetch_candidate(
         candidate_text: str,
@@ -480,20 +1007,54 @@ def handle_call(
     def enqueue_turn(
         turn: CompletedTurn,
     ) -> None:
-        # Claim the half-duplex response window immediately. This closes
-        # the race between Moonshine completing a turn and the worker
-        # beginning inference.
-        if stop.is_set():
-            return
+        original_turn = turn
 
-        if busy.is_set():
+        turn, fragment_disposition, discarded_fragment = (
+            incomplete_turn_buffer.ingest(turn)
+        )
+
+        if discarded_fragment is not None:
             recorder.record_event(
-                "agent_turn_dropped",
-                reason="half_duplex_busy",
-                text=turn.text,
+                "agent_turn_fragment_discarded",
+                reason="not_safe_to_merge",
+                text=discarded_fragment.text,
+                lines=discarded_fragment.lines,
             )
 
-            print(f"[HALF-DUPLEX] Dropping overlapping turn: {turn.text!r}")
+        if turn is None:
+            recorder.record_event(
+                "agent_turn_fragment_held",
+                text=original_turn.text,
+                lines=original_turn.lines,
+            )
+
+            print(
+                f"[TURN HOLD] Incomplete ASR fragment: {original_turn.text!r}",
+                flush=True,
+            )
+            return
+
+        if fragment_disposition == "merged_fragment":
+            recorder.record_event(
+                "agent_turn_fragment_merged",
+                continuation_text=original_turn.text,
+                merged_text=turn.text,
+                lines=turn.lines,
+            )
+
+            print(
+                f"[TURN MERGE] Recovered complete turn: {turn.text!r}",
+                flush=True,
+            )
+
+        disposition = queue_completed_turn(
+            turn=turn,
+            turns=turn_queue,
+            busy=busy,
+            stop=stop,
+        )
+
+        if disposition == "stopped":
             return
 
         recorder.record_transcript_turn(
@@ -508,10 +1069,21 @@ def handle_call(
             "agent_turn_completed",
             text=turn.text,
             lines=turn.lines,
+            queue_disposition=disposition,
         )
 
-        busy.set()
-        turn_queue.put_nowait(turn)
+        if disposition == "buffered":
+            recorder.record_event(
+                "agent_turn_buffered",
+                reason="reasoning_or_response_busy",
+                text=turn.text,
+                queue_depth=turn_queue.qsize(),
+            )
+
+            print(
+                f"[TURN BUFFER] Preserving overlapping turn: {turn.text!r}",
+                flush=True,
+            )
 
     transcriber, listener = build_transcriber(
         on_turn=enqueue_turn,
@@ -528,8 +1100,11 @@ def handle_call(
             "pipeline": pipeline,
             "voice": voice,
             "busy": busy,
+            "playback_active": playback_active,
             "stop": stop,
             "recorder": recorder,
+            "audiosocket_send_lock": audiosocket_send_lock,
+            "tts_pcm_cache": tts_pcm_cache,
         },
         daemon=True,
     )
@@ -607,6 +1182,28 @@ def handle_call(
 
                     print(f"Call UUID: {call_id}")
 
+                    if idle_silence_thread is None:
+                        idle_silence_thread = threading.Thread(
+                            target=send_idle_silence,
+                            kwargs={
+                                "connection": connection,
+                                "stop": stop,
+                                "send_lock": audiosocket_send_lock,
+                            },
+                            name="voiceprobe-idle-silence",
+                            daemon=True,
+                        )
+
+                        idle_silence_thread.start()
+
+                        recorder.record_event(
+                            "idle_silence_media_started",
+                            frame_bytes=FRAME_BYTES,
+                            frame_duration_seconds=(
+                                FRAME_DURATION_SECONDS
+                            ),
+                        )
+
                 continue
 
             if message_type == TYPE_DTMF:
@@ -630,10 +1227,12 @@ def handle_call(
             # withholds from Moonshine.
             recorder.record_inbound_pcm(payload)
 
-            # First diagnostic is intentionally half-duplex. Audio
-            # received while VoiceProbe is reasoning/speaking is consumed
-            # from AudioSocket but never sent to Moonshine.
-            if busy.is_set():
+            # Continue listening during reasoning and TTS preparation.
+            # Suppress Moonshine input only while our own patient speech is
+            # actually on the wire plus the short echo-guard interval.
+            if not should_forward_inbound_audio(
+                playback_active=playback_active,
+            ):
                 continue
 
             audio = pcm16_to_float32(payload)
@@ -645,7 +1244,23 @@ def handle_call(
 
     finally:
         stop.set()
+
+        if idle_silence_thread is not None:
+            idle_silence_thread.join(
+                timeout=1.0
+            )
+
         session.invalidate_prefetch()
+
+        unresolved_fragment = incomplete_turn_buffer.take_pending()
+
+        if unresolved_fragment is not None:
+            recorder.record_event(
+                "agent_turn_fragment_discarded",
+                reason="call_ended_before_continuation",
+                text=unresolved_fragment.text,
+                lines=unresolved_fragment.lines,
+            )
 
         transcriber.stop()
         listener.close()
@@ -753,23 +1368,23 @@ def main(
     with httpx.Client(
         timeout=20.0,
     ) as client:
-        interpreter = OllamaConversationInterpreter(
-            model=args.model,
-            url=args.url,
-            client=client,
-        )
-
-        verbalizer = OllamaNaturalVerbalizer(
-            model=args.model,
-            url=args.url,
-            client=client,
-        )
-
-        session = PatientSession(
+        session = build_runtime_patient_session(
             scenario=scenario,
-            interpreter=interpreter,
-            verbalizer=verbalizer,
-            brain=PatientBrain(),
+            model=args.model,
+            url=args.url,
+            client=client,
+        )
+
+        print(
+            "Reasoning: "
+            + (
+                "v2"
+                if isinstance(
+                    session,
+                    ReasoningV2PatientSession,
+                )
+                else "legacy"
+            )
         )
 
         with socket.socket(

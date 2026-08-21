@@ -14,6 +14,12 @@ from voiceprobe.scenarios.models import PatientScenario
 
 type FactKey = Literal[
     "name",
+    "first_name",
+    "last_name",
+    "patient_status",
+    "visited_before",
+    "appointment_type",
+    "provider_preference",
     "complaint",
     "duration",
     "date_of_birth",

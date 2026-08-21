@@ -1,19 +1,21 @@
-"""Production Asterisk execution adapter for authorized assessment calls.
+"""Production Asterisk execution adapter for authorized calls.
 
 The generic suite runner owns authorization, sequencing, persistence, and
 budget state. This module owns exactly one telephony attempt after the runner
 has authorized it.
 
-No destination normalization occurs here. The strict assessment-number safety
+No destination normalization occurs here. The strict destination-number safety
 boundary is revalidated immediately before any AMI or socket side effect.
 """
 
 from __future__ import annotations
 
+import os
 import socket
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID, uuid4
@@ -29,13 +31,18 @@ from voiceprobe.autonomous_phone import (
     DEFAULT_OLLAMA_URL,
     DEFAULT_PORT,
     DEFAULT_VOICE,
+    build_pre_rendered_tts_cache,
     handle_call,
-    synthesize,
     terminate_audiosocket_connection,
 )
 from voiceprobe.conversation.session import PatientSession
 from voiceprobe.interpreters.ollama import OllamaConversationInterpreter
+from voiceprobe.reasoning.session_v2 import (
+    ReasoningV2PatientSession,
+    reasoning_v2_enabled_from_environment,
+)
 from voiceprobe.policy import CallPolicy
+from voiceprobe.policy import MAX_CALL_DURATION_SECONDS
 from voiceprobe.runner import (
     AssessmentCallRequest,
     AssessmentCallResult,
@@ -51,10 +58,90 @@ from voiceprobe.telephony.ami import (
     AsteriskHangupResult,
     OriginateResult,
 )
-from voiceprobe.verbalizers.ollama import OllamaNaturalVerbalizer
+from voiceprobe.verbalizers.deterministic import DeterministicNaturalVerbalizer
+
+VOICEPROBE_V3_LIVE_ENV = "VOICEPROBE_V3_LIVE"
+
+
+def v3_live_enabled_from_environment() -> bool:
+    """Return whether the explicit v3 live-media path is enabled."""
+
+    raw = os.environ.get(VOICEPROBE_V3_LIVE_ENV, "").strip().casefold()
+
+    if raw in {"", "0", "false", "no", "off"}:
+        return False
+
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+
+    raise ValueError(
+        f"{VOICEPROBE_V3_LIVE_ENV} must be one of "
+        "0/1, false/true, no/yes, or off/on"
+    )
+
 
 DEFAULT_ACCEPT_TIMEOUT_SECONDS = 10.0
 DEFAULT_ORIGINATE_TIMEOUT_MS = 30_000
+
+
+class AsteriskTerminationStatus(StrEnum):
+    """Why the media session stopped from VoiceProbe's perspective."""
+
+    NORMAL_COMPLETION = "normal_completion"
+    PREMATURE_REMOTE_TERMINATION = "premature_remote_termination"
+    MAX_DURATION_TERMINATION = "max_duration_termination"
+
+
+def _classify_termination(
+    *,
+    objective_complete: bool,
+    max_duration_reached: bool,
+) -> AsteriskTerminationStatus:
+    """Classify termination without treating transport closure as success."""
+    if objective_complete:
+        return AsteriskTerminationStatus.NORMAL_COMPLETION
+
+    if max_duration_reached:
+        return AsteriskTerminationStatus.MAX_DURATION_TERMINATION
+
+    # The autonomous call path only requests normal local termination after
+    # PatientBrain returns END_CONVERSATION. The brain does not permit that
+    # before objective completion. Therefore an incomplete, non-deadline
+    # AudioSocket termination is not a successful local completion.
+    return AsteriskTerminationStatus.PREMATURE_REMOTE_TERMINATION
+
+
+def _termination_failure_reason(
+    *,
+    status: AsteriskTerminationStatus,
+    booking_confirmed: bool,
+    offer_accepted: bool,
+    offered_day: str | None,
+    offered_time: str | None,
+) -> str | None:
+    """Build durable evidence explaining an incomplete call objective."""
+    if status is AsteriskTerminationStatus.NORMAL_COMPLETION:
+        return None
+
+    if status is AsteriskTerminationStatus.MAX_DURATION_TERMINATION:
+        prefix = (
+            "max_duration_termination: call reached VoiceProbe's maximum "
+            "duration before the scheduling objective completed"
+        )
+    else:
+        prefix = (
+            "premature_remote_termination: call ended before the scheduling "
+            "objective completed and VoiceProbe had not requested normal "
+            "objective-complete termination"
+        )
+
+    return (
+        f"{prefix}; "
+        f"booking_confirmed={booking_confirmed}; "
+        f"offer_accepted={offer_accepted}; "
+        f"offered_day={offered_day!r}; "
+        f"offered_time={offered_time!r}"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +153,18 @@ class AsteriskMediaOutcome:
     duration_seconds: float
     originate: OriginateResult
     hangup: AsteriskHangupResult | None = None
+
+    # Defaults preserve compatibility for injected media executors that
+    # predate objective-aware termination classification.
+    termination_status: AsteriskTerminationStatus = (
+        AsteriskTerminationStatus.NORMAL_COMPLETION
+    )
+    objective_complete: bool = True
+    booking_confirmed: bool = True
+    offer_accepted: bool = True
+    offered_day: str | None = None
+    offered_time: str | None = None
+    failure_reason: str | None = None
 
 
 class _AMIClient(Protocol):
@@ -206,7 +305,7 @@ def _default_ami_client_factory(
 
 
 class AsteriskAssessmentCallAdapter:
-    """Execute one already-authorized assessment call through Asterisk.
+    """Execute one already-authorized call through Asterisk.
 
     The adapter deliberately has no retry loop. One execute_call invocation
     maps to at most one AMI Originate operation.
@@ -269,11 +368,18 @@ class AsteriskAssessmentCallAdapter:
         self._call_id_factory = call_id_factory
 
         self._pipeline: KPipeline | None = None
+        self._tts_pcm_cache: dict[str, bytes] | None = None
         self._http_client: httpx.Client | None = None
 
-        self._media_executor: _MediaExecutor = (
-            media_executor if media_executor is not None else self._execute_media_call
-        )
+        self._media_executor: _MediaExecutor
+
+        if media_executor is not None:
+            # Explicit test/injected media always wins over environment selection.
+            self._media_executor = media_executor
+        elif v3_live_enabled_from_environment():
+            self._media_executor = self._execute_v3_media_call
+        else:
+            self._media_executor = self._execute_media_call
 
     def execute_call(
         self,
@@ -304,10 +410,10 @@ class AsteriskAssessmentCallAdapter:
                 request.max_duration_seconds,
                 int,
             )
-            or not 1 <= request.max_duration_seconds <= 180
+            or not 1 <= request.max_duration_seconds <= MAX_CALL_DURATION_SECONDS
         ):
             raise CallExecutionError(
-                "Assessment call duration must be between 1 and 180 seconds."
+                f"Assessment call duration must be between 1 and {MAX_CALL_DURATION_SECONDS} seconds."
             )
 
         # Resolve the scenario before any AMI side effect.
@@ -372,6 +478,66 @@ class AsteriskAssessmentCallAdapter:
             artifact_run_id=artifact_run_id,
             duration_seconds=outcome.duration_seconds,
             provider_cost_usd=None,
+            assessment_succeeded=outcome.objective_complete,
+            failure_reason=outcome.failure_reason,
+        )
+
+    def _execute_v3_media_call(
+        self,
+        request: AssessmentCallRequest,
+        call_id: UUID,
+        originate: Callable[[], OriginateResult],
+    ) -> AsteriskMediaOutcome:
+        """Execute the explicit v3 Pipecat/Flux live-media path."""
+
+        deepgram_api_key = os.environ.get("DEEPGRAM_API_KEY", "").strip()
+
+        if not deepgram_api_key:
+            # Fail before building the listener or invoking the originate callback.
+            raise CallExecutionError(
+                "VOICEPROBE_V3_LIVE=1 requires DEEPGRAM_API_KEY before dialing."
+            )
+
+        from voiceprobe.v3.asterisk_live import execute_v3_asterisk_media
+
+        pipeline, _ = self._ensure_runtime()
+        hangup_observer = (
+            originate.wait_for_hangup
+            if isinstance(originate, _MonitoredOriginate)
+            else None
+        )
+
+        result = execute_v3_asterisk_media(
+            request=request,
+            call_id=call_id,
+            originate=originate,
+            pipeline=pipeline,
+            voice=self._voice,
+            tts_pcm_cache=self._tts_pcm_cache,
+            deepgram_api_key=deepgram_api_key,
+            artifact_root=self._artifact_root,
+            host=self._host,
+            port=self._port,
+            accept_timeout_seconds=self._accept_timeout_seconds,
+            hangup_observer=hangup_observer,
+            ami_error_type=AMIClientError,
+            classify_termination=_classify_termination,
+            termination_failure_reason=_termination_failure_reason,
+        )
+
+        return AsteriskMediaOutcome(
+            call_id=result.call_id,
+            artifact_run_id=result.artifact_run_id,
+            duration_seconds=result.duration_seconds,
+            originate=result.originate,
+            hangup=result.hangup,
+            termination_status=result.termination_status,
+            objective_complete=result.objective_complete,
+            booking_confirmed=result.booking_confirmed,
+            offer_accepted=result.offer_accepted,
+            offered_day=result.offered_day,
+            offered_time=result.offered_time,
+            failure_reason=result.failure_reason,
         )
 
     def _execute_media_call(
@@ -385,24 +551,34 @@ class AsteriskAssessmentCallAdapter:
 
         scenario = get_scenario(request.scenario_id)
 
-        interpreter = OllamaConversationInterpreter(
-            model=self._model,
-            url=self._ollama_url,
-            client=http_client,
-        )
+        if reasoning_v2_enabled_from_environment():
+            session = ReasoningV2PatientSession(
+                scenario=scenario,
+                model=self._model,
+                url=self._ollama_url,
+                client=http_client,
+            )
+        else:
+            # Preserve the existing production behavior exactly when
+            # VOICEPROBE_REASONING_V2 is unset or zero.
+            interpreter = OllamaConversationInterpreter(
+                model=self._model,
+                url=self._ollama_url,
+                client=http_client,
+            )
 
-        verbalizer = OllamaNaturalVerbalizer(
-            model=self._model,
-            url=self._ollama_url,
-            client=http_client,
-        )
+            verbalizer = DeterministicNaturalVerbalizer(
+                model=self._model,
+                url=self._ollama_url,
+                client=http_client,
+            )
 
-        session = PatientSession(
-            scenario=scenario,
-            interpreter=interpreter,
-            verbalizer=verbalizer,
-            brain=PatientBrain(),
-        )
+            session = PatientSession(
+                scenario=scenario,
+                interpreter=interpreter,
+                verbalizer=verbalizer,
+                brain=PatientBrain(),
+            )
 
         try:
             with socket.socket(
@@ -450,12 +626,15 @@ class AsteriskAssessmentCallAdapter:
                     )
 
                     call_finished = threading.Event()
+                    max_duration_reached = threading.Event()
 
                     def enforce_max_duration() -> None:
                         expired = not call_finished.wait(request.max_duration_seconds)
 
                         if not expired:
                             return
+
+                        max_duration_reached.set()
 
                         recorder.record_event(
                             "max_call_duration_reached",
@@ -480,6 +659,7 @@ class AsteriskAssessmentCallAdapter:
                                 pipeline=pipeline,
                                 voice=self._voice,
                                 recorder=recorder,
+                                tts_pcm_cache=self._tts_pcm_cache,
                             )
                     finally:
                         call_finished.set()
@@ -530,11 +710,55 @@ class AsteriskAssessmentCallAdapter:
                             channel=originate_result.channel,
                         )
 
+                    progress = session.progress
+
+                    termination_status = _classify_termination(
+                        objective_complete=progress.objective_complete,
+                        max_duration_reached=max_duration_reached.is_set(),
+                    )
+
+                    failure_reason = _termination_failure_reason(
+                        status=termination_status,
+                        booking_confirmed=progress.booking_confirmed,
+                        offer_accepted=progress.offer_accepted,
+                        offered_day=progress.offered_day,
+                        offered_time=progress.offered_time,
+                    )
+
+                    recorder.record_event(
+                        "call_termination_classified",
+                        termination_status=termination_status.value,
+                        objective_complete=progress.objective_complete,
+                        booking_confirmed=progress.booking_confirmed,
+                        offer_accepted=progress.offer_accepted,
+                        offered_day=progress.offered_day,
+                        offered_time=progress.offered_time,
+                        max_duration_reached=max_duration_reached.is_set(),
+                        asterisk_hangup_observed=(hangup_result is not None),
+                        asterisk_hangup_cause=(
+                            hangup_result.cause
+                            if hangup_result is not None
+                            else None
+                        ),
+                        asterisk_hangup_cause_text=(
+                            hangup_result.cause_text
+                            if hangup_result is not None
+                            else None
+                        ),
+                    )
+
                     duration_seconds = recorder.elapsed_seconds
 
+                    artifact_status = (
+                        "completed"
+                        if progress.objective_complete
+                        else termination_status.value
+                    )
+
                     recorder.finalize(
-                        status="completed",
+                        status=artifact_status,
                         call_id=str(observed_call_id),
+                        error=failure_reason,
                     )
 
                     return AsteriskMediaOutcome(
@@ -543,10 +767,25 @@ class AsteriskAssessmentCallAdapter:
                         duration_seconds=duration_seconds,
                         originate=originate_result,
                         hangup=hangup_result,
+                        termination_status=termination_status,
+                        objective_complete=progress.objective_complete,
+                        booking_confirmed=progress.booking_confirmed,
+                        offer_accepted=progress.offer_accepted,
+                        offered_day=progress.offered_day,
+                        offered_time=progress.offered_time,
+                        failure_reason=failure_reason,
                     )
         finally:
-            interpreter.close()
-            verbalizer.close()
+            # Reasoning v2 owns and closes its semantic/planner components.
+            # Legacy mode still owns the separate interpreter/verbalizer.
+            if isinstance(
+                session,
+                ReasoningV2PatientSession,
+            ):
+                session.close()
+            else:
+                interpreter.close()
+                verbalizer.close()
 
     def _ensure_runtime(
         self,
@@ -561,14 +800,15 @@ class AsteriskAssessmentCallAdapter:
                 repo_id="hexgrad/Kokoro-82M",
             )
 
-            # Warm the selected voice before the listener can possibly dial.
-            synthesize(
-                pipeline=pipeline,
-                voice=self._voice,
-                text="Hello.",
-            )
-
             self._pipeline = pipeline
+
+        if self._tts_pcm_cache is None:
+            # Pre-render time-critical deterministic responses before the
+            # listener can possibly originate a real call.
+            self._tts_pcm_cache = build_pre_rendered_tts_cache(
+                pipeline=self._pipeline,
+                voice=self._voice,
+            )
 
         if self._http_client is None:
             self._http_client = httpx.Client(

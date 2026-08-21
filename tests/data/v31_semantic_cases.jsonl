@@ -1,0 +1,29 @@
+{"intent":"visit_reason_request","text":"What is the reason for your visit?"}
+{"intent":"visit_reason_request","text":"What is the reason for your appointment?"}
+{"intent":"visit_reason_request","text":"What brings you in today?"}
+{"intent":"visit_reason_request","text":"What are we seeing you for?"}
+{"intent":"visit_reason_request","text":"What is this appointment for?"}
+{"intent":"visit_reason_request","text":"What specific concern are you being seen for?"}
+{"intent":"visit_reason_request","text":"Why are you coming in?"}
+{"intent":"visit_reason_request","text":"Can you tell me why you need the appointment?"}
+{"intent":"appointment_type_request","text":"What type of appointment do you need?"}
+{"intent":"appointment_type_request","text":"Is this a new patient consultation or follow up?"}
+{"intent":"appointment_type_request","text":"What kind of visit are we scheduling?"}
+{"intent":"insurance_request","text":"What insurance do you have?"}
+{"intent":"insurance_request","text":"Who are you covered through?"}
+{"intent":"insurance_request","text":"Which insurance carrier do you use?"}
+{"intent":"dob_request","text":"What is your date of birth?"}
+{"intent":"dob_request","text":"Can you give me your birthday?"}
+{"intent":"dob_request","text":"What's your DOB?"}
+{"intent":"open_ended_help","text":"How may I help you today?"}
+{"intent":"open_ended_help","text":"May I help you?"}
+{"intent":"open_ended_help","text":"What are you calling about today?"}
+{"intent":"full_name_request","text":"Can I have your full name?"}
+{"intent":"first_name_request","text":"What is your first name?"}
+{"intent":"last_name_request","text":"What is your surname?"}
+{"intent":"provider_preference_request","text":"Do you have a provider preference?"}
+{"intent":"provider_preference_request","text":"Is first available okay?"}
+{"intent":"date_time_preference_request","text":"What day and time would you prefer?"}
+{"intent":"date_time_preference_request","text":"When would you like the appointment?"}
+{"intent":"presence_check","text":"Are you still there?"}
+{"intent":"presence_check","text":"Can you hear me?"}
